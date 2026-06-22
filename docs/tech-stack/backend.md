@@ -17,6 +17,7 @@ See [ADR-0001](../decisions/0001-backend-language-go.md) for why Go was chosen.
   /natsutil                 # NATS JetStream connection/subject helpers
   /redisutil                # Redis client wrapper (hot state + cache)
   /pgstore                  # Postgres access layer (history, events, zones)
+  /pgstorewriter            # durable-store writer for history/event persistence
   /geo                      # bbox/radius/point-in-polygon helpers (used where Redis/PostGIS aren't a fit)
 /web                        # frontend (see frontend.md)
 /deploy                     # Dockerfiles, fly.toml, docker-compose.yml for local dev
@@ -37,8 +38,13 @@ Each `/cmd` entry is an independently deployable binary/container; they share co
 
 ## Event engine
 - Stateless consumer of `flights.updates`; evaluates each update against the rule set (altitude/speed delta thresholds, stale-signal detection, geofence enter/exit, watchlist match).
-- Emits `Event` records to `events.detected` and writes them to Postgres.
+- Emits `Event` records to `events.detected`.
 - Rule thresholds are configuration, not hardcoded, so they can be tuned without a redeploy of the engine binary itself (see the implementation plan for where this lands).
+
+## Postgres writer
+- Stateless consumer of `flights.updates` and `events.detected`.
+- Writes downsampled `flight_history` rows and durable `events` records to Postgres.
+- Keeps durable persistence separate from event evaluation so each concern can scale and fail independently.
 
 ## API gateway
 - **HTTP router:** `chi` (lightweight, idiomatic, stdlib-compatible) for REST.

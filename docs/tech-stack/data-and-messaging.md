@@ -50,7 +50,7 @@ CREATE TABLE events (
   type text NOT NULL,
   icao24 text NOT NULL,
   severity text NOT NULL,
-  occurred_at timestamptz NOT NULL,
+  occurred_at_utc timestamptz NOT NULL,
   detail jsonb
 );
 

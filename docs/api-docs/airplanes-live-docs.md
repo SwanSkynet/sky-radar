@@ -450,6 +450,3 @@ When consuming this API:
 8. Aircraft may disappear when position updates become stale.
 9. `alt_baro` may be either a number or the string `"ground"`.
 10. Values derived from MLAT or estimated positions may be less accurate than ADS-B positions.
-
-```
-```

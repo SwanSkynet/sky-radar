@@ -1,7 +1,7 @@
 # Observability and Operations Stack
 
 ## Principle
-Observability is a product requirement (see [FR-11/FR-13 equivalents in the master PRD](../prd/00-master-prd.md)), not an internal nice-to-have — SLO attainment is published on a public status page. The constraint, given [ADR-0002](../decisions/0002-hosting-lightweight-containers.md), is achieving this *without* self-hosting a heavy monitoring stack.
+Observability is a product requirement (see the SLO and status-page requirements in the [master PRD](../prd/00-master-prd.md)), not an internal nice-to-have — SLO attainment is published on a public status page. The constraint, given [ADR-0002](../decisions/0002-hosting-lightweight-containers.md), is achieving this *without* self-hosting a heavy monitoring stack.
 
 ## Instrumentation
 - **OpenTelemetry** across all Go services: metrics, traces, and structured logs share trace/span IDs so an ingestion → event → API request path can be followed end-to-end.

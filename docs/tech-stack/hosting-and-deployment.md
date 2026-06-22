@@ -19,7 +19,7 @@ See [ADR-0002](../decisions/0002-hosting-lightweight-containers.md) for why this
 ## Deployment topology (initial)
 ```
 Instance 1: adapter-opensky, adapter-adsblol, adapter-airplaneslive, normalizer
-Instance 2: eventengine, apigateway
+Instance 2: eventengine, pgstore-writer, apigateway
 Instance 3: NATS JetStream, Redis
 Managed Postgres (provider add-on, not self-hosted)
 Static frontend: deployed to a CDN/static host (e.g., the PaaS's static asset serving, or Cloudflare Pages free tier)
