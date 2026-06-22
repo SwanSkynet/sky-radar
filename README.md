@@ -64,6 +64,8 @@ Sky Radar is built entirely on public/community aviation data feeds (e.g., OpenS
 
 Local development setup (docker-compose stack with mocked provider data) will be documented here once Phase 1 lands.
 
+One-time setup: run `git config core.hooksPath .githooks` to enable the formatting pre-commit hook.
+
 ## Contributing
 
 Contribution guidelines, coding standards, and the architecture-change RFC process will live in `CONTRIBUTING.md`. Until then, open an issue to discuss ideas or pick up roadmap items.

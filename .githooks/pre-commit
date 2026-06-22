@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Formatting gate for staged files. Full lint/test runs in CI; this hook
+# only checks gofmt/prettier so commits stay fast.
+set -euo pipefail
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+
+staged() {
+	git diff --cached --name-only --diff-filter=ACM -- "$@"
+}
+
+go_files=$(staged '*.go')
+if [[ -n "$go_files" ]]; then
+	unformatted=$(gofmt -l $go_files)
+	if [[ -n "$unformatted" ]]; then
+		echo "gofmt: the following files are not formatted:"
+		echo "$unformatted"
+		echo "Run: gofmt -w \$(git diff --cached --name-only --diff-filter=ACM -- '*.go')"
+		exit 1
+	fi
+fi
+
+web_files=$(staged 'web/*.ts' 'web/*.tsx' 'web/*.js' 'web/*.jsx' 'web/*.css' 'web/*.json' 'web/*.html' 'web/*.md')
+if [[ -n "$web_files" ]]; then
+	(cd web && npx --no-install prettier --check $(echo "$web_files" | sed 's|^web/||')) || {
+		echo "prettier: run 'npm run format' in web/ and re-stage."
+		exit 1
+	}
+fi

@@ -1,0 +1,9 @@
+prompts/
+
+# Go
+/bin/
+*.test
+
+# Node (web/node_modules has its own .gitignore but this covers root tooling)
+node_modules/
+web/dist/
