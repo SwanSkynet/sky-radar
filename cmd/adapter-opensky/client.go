@@ -94,17 +94,16 @@ func (c *Client) Poll(ctx context.Context) ([]sourceadapter.RawState, error) {
 		reqURL += "?" + q.Encode()
 	}
 
-	var token string
-	if c.clientID != "" {
-		t, err := c.getToken(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("opensky: get token: %w", err)
-		}
-		token = t
-	}
-
 	var body []byte
 	err := sourceadapter.Retry(ctx, c.backoff, c.maxAttempts, func() error {
+		token := ""
+		if c.clientID != "" {
+			t, tokenErr := c.getToken(ctx)
+			if tokenErr != nil {
+				return tokenErr
+			}
+			token = t
+		}
 		b, fetchErr := c.fetch(ctx, reqURL, token)
 		if fetchErr == nil {
 			body = b
@@ -223,6 +222,16 @@ func (c *Client) getToken(ctx context.Context) (string, error) {
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes+1))
 	if err != nil {
 		return "", err
+	}
+	if len(body) > maxResponseBodyBytes {
+		return "", fmt.Errorf("opensky: token response exceeds %d bytes", maxResponseBodyBytes)
+	}
+
+	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError {
+		return "", &sourceadapter.RetryableError{
+			Err:        fmt.Errorf("opensky: token request status %d", resp.StatusCode),
+			RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After")),
+		}
 	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("opensky: token request: unexpected status %d", resp.StatusCode)

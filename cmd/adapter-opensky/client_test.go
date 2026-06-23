@@ -244,6 +244,79 @@ func TestTokenIsRefreshedAfterExpiry(t *testing.T) {
 	}
 }
 
+func TestPollRetriesTokenRequestOn429ThenSucceeds(t *testing.T) {
+	var tokenAttempts int32
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/auth/token", func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&tokenAttempts, 1) == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"retried-token","expires_in":300}`))
+	})
+	mux.HandleFunc("/states/all", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer retried-token" {
+			t.Errorf("Authorization header = %q, want %q", got, "Bearer retried-token")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"time":0,"states":[]}`))
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := NewClient(server.Client(), server.URL, server.URL+"/auth/token", "id", "secret", nil)
+	if _, err := client.Poll(context.Background()); err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+	if tokenAttempts != 2 {
+		t.Fatalf("tokenAttempts = %d, want 2", tokenAttempts)
+	}
+}
+
+func TestPollFailsAfterExhaustingTokenRetriesOn5xx(t *testing.T) {
+	var tokenAttempts int32
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/auth/token", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&tokenAttempts, 1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+	mux.HandleFunc("/states/all", func(w http.ResponseWriter, r *http.Request) {
+		t.Error("states/all should not be reached when token acquisition keeps failing")
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := NewClient(server.Client(), server.URL, server.URL+"/auth/token", "id", "secret", nil)
+	client.backoff = sourceadapter.NewBackoff(time.Millisecond, 5*time.Millisecond)
+	client.maxAttempts = 3
+
+	if _, err := client.Poll(context.Background()); err == nil {
+		t.Fatal("Poll returned nil error, want error after exhausting token retries")
+	}
+	if tokenAttempts != 3 {
+		t.Fatalf("tokenAttempts = %d, want 3", tokenAttempts)
+	}
+}
+
+func TestGetTokenFailsWhenResponseExceedsSizeLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(make([]byte, maxResponseBodyBytes+1))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client(), server.URL, server.URL, "id", "secret", nil)
+	if _, err := client.getToken(context.Background()); err == nil {
+		t.Fatal("getToken returned nil error, want error on oversized response")
+	}
+}
+
 func TestPollFailsWhenResponseExceedsSizeLimit(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
