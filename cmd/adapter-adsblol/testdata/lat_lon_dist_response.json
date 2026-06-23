@@ -1,0 +1,42 @@
+{
+  "ac": [
+    {
+      "hex": "3c6444",
+      "flight": "DLH123",
+      "r": "D-AIBL",
+      "t": "A320",
+      "type": "adsb_icao",
+      "alt_baro": 33000,
+      "gs": 412,
+      "track": 271.2,
+      "lat": 50.0379,
+      "lon": 8.5622,
+      "squawk": "1000",
+      "messages": 4321,
+      "seen": 0.3
+    },
+    {
+      "hex": "a1b2c3",
+      "flight": "GROUND2",
+      "type": "mlat",
+      "alt_baro": "ground",
+      "gs": 0,
+      "lat": 51.4700,
+      "lon": -0.4543,
+      "messages": 88,
+      "seen": 2.1
+    },
+    {
+      "flight": "NOHEX",
+      "alt_baro": 9000,
+      "lat": 12.0,
+      "lon": 34.0,
+      "messages": 2,
+      "seen": 5.0
+    }
+  ],
+  "msg": "No error",
+  "total": 3,
+  "ctime": 1700000000000,
+  "ptime": 1
+}
