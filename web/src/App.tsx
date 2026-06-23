@@ -78,6 +78,7 @@ function App() {
               <a
                 href="https://vite.dev/"
                 target="_blank"
+                rel="noopener noreferrer"
                 className="box-border flex w-full items-center justify-center gap-2 rounded-md bg-social-bg px-3 py-1.5 text-[16px] text-text-h no-underline transition-shadow duration-300 hover:shadow-[0_10px_15px_-3px_rgba(0,0,0,0.1),0_4px_6px_-2px_rgba(0,0,0,0.05)] lg:w-auto lg:justify-start dark:hover:shadow-[0_10px_15px_-3px_rgba(0,0,0,0.4),0_4px_6px_-2px_rgba(0,0,0,0.25)]"
               >
                 <img className="h-[18px]" src={viteLogo} alt="" />
@@ -88,10 +89,11 @@ function App() {
               <a
                 href="https://react.dev/"
                 target="_blank"
+                rel="noopener noreferrer"
                 className="box-border flex w-full items-center justify-center gap-2 rounded-md bg-social-bg px-3 py-1.5 text-[16px] text-text-h no-underline transition-shadow duration-300 hover:shadow-[0_10px_15px_-3px_rgba(0,0,0,0.1),0_4px_6px_-2px_rgba(0,0,0,0.05)] lg:w-auto lg:justify-start dark:hover:shadow-[0_10px_15px_-3px_rgba(0,0,0,0.4),0_4px_6px_-2px_rgba(0,0,0,0.25)]"
               >
                 <img className="h-[18px] w-[18px]" src={reactLogo} alt="" />
-                Learn more
+                Learn React
               </a>
             </li>
           </ul>
@@ -113,6 +115,7 @@ function App() {
               <a
                 href="https://github.com/vitejs/vite"
                 target="_blank"
+                rel="noopener noreferrer"
                 className="box-border flex w-full items-center justify-center gap-2 rounded-md bg-social-bg px-3 py-1.5 text-[16px] text-text-h no-underline transition-shadow duration-300 hover:shadow-[0_10px_15px_-3px_rgba(0,0,0,0.1),0_4px_6px_-2px_rgba(0,0,0,0.05)] lg:w-auto lg:justify-start dark:hover:shadow-[0_10px_15px_-3px_rgba(0,0,0,0.4),0_4px_6px_-2px_rgba(0,0,0,0.25)]"
               >
                 <svg
@@ -129,6 +132,7 @@ function App() {
               <a
                 href="https://chat.vite.dev/"
                 target="_blank"
+                rel="noopener noreferrer"
                 className="box-border flex w-full items-center justify-center gap-2 rounded-md bg-social-bg px-3 py-1.5 text-[16px] text-text-h no-underline transition-shadow duration-300 hover:shadow-[0_10px_15px_-3px_rgba(0,0,0,0.1),0_4px_6px_-2px_rgba(0,0,0,0.05)] lg:w-auto lg:justify-start dark:hover:shadow-[0_10px_15px_-3px_rgba(0,0,0,0.4),0_4px_6px_-2px_rgba(0,0,0,0.25)]"
               >
                 <svg
@@ -145,6 +149,7 @@ function App() {
               <a
                 href="https://x.com/vite_js"
                 target="_blank"
+                rel="noopener noreferrer"
                 className="box-border flex w-full items-center justify-center gap-2 rounded-md bg-social-bg px-3 py-1.5 text-[16px] text-text-h no-underline transition-shadow duration-300 hover:shadow-[0_10px_15px_-3px_rgba(0,0,0,0.1),0_4px_6px_-2px_rgba(0,0,0,0.05)] lg:w-auto lg:justify-start dark:hover:shadow-[0_10px_15px_-3px_rgba(0,0,0,0.4),0_4px_6px_-2px_rgba(0,0,0,0.25)]"
               >
                 <svg
@@ -161,6 +166,7 @@ function App() {
               <a
                 href="https://bsky.app/profile/vite.dev"
                 target="_blank"
+                rel="noopener noreferrer"
                 className="box-border flex w-full items-center justify-center gap-2 rounded-md bg-social-bg px-3 py-1.5 text-[16px] text-text-h no-underline transition-shadow duration-300 hover:shadow-[0_10px_15px_-3px_rgba(0,0,0,0.1),0_4px_6px_-2px_rgba(0,0,0,0.05)] lg:w-auto lg:justify-start dark:hover:shadow-[0_10px_15px_-3px_rgba(0,0,0,0.4),0_4px_6px_-2px_rgba(0,0,0,0.25)]"
               >
                 <svg
