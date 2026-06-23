@@ -1,0 +1,43 @@
+{
+  "ac": [
+    {
+      "hex": "45211e",
+      "flight": "CFG846",
+      "r": "LZ-LAJ",
+      "t": "A320",
+      "type": "adsb_icao",
+      "alt_baro": 37000,
+      "gs": 496,
+      "track": 113.55,
+      "lat": 43.261414,
+      "lon": 29.636404,
+      "squawk": "7665",
+      "messages": 7675,
+      "seen": 0.5
+    },
+    {
+      "hex": "a1b2c3",
+      "flight": "GROUND1",
+      "type": "mlat",
+      "alt_baro": "ground",
+      "gs": 0,
+      "lat": 37.6188,
+      "lon": -122.3758,
+      "messages": 120,
+      "seen": 1.2
+    },
+    {
+      "flight": "NOHEX",
+      "alt_baro": 12000,
+      "lat": 10.0,
+      "lon": 20.0,
+      "messages": 5,
+      "seen": 3.0
+    }
+  ],
+  "msg": "No error",
+  "now": 1695420989961,
+  "total": 3,
+  "ctime": 1695420989961,
+  "ptime": 0
+}
