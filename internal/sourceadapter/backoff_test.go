@@ -99,6 +99,44 @@ func TestRetryHonorsRetryAfter(t *testing.T) {
 	}
 }
 
+func TestRetryRejectsNonPositiveMaxAttempts(t *testing.T) {
+	b := NewBackoff(time.Millisecond, 5*time.Millisecond)
+	calls := 0
+	for _, maxAttempts := range []int{0, -1} {
+		err := Retry(context.Background(), b, maxAttempts, func() error {
+			calls++
+			return nil
+		})
+		if err == nil {
+			t.Fatalf("Retry(maxAttempts=%d) returned nil error, want error", maxAttempts)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("fn was called %d times, want 0 (should reject before calling fn)", calls)
+	}
+}
+
+func TestRetrySkipsWaitAfterFinalAttempt(t *testing.T) {
+	// A wait calls b.Next(), which increments b.attempt. If Retry waited
+	// after every attempt (including the last), b.attempt would end up at
+	// maxAttempts; if it correctly skips the final wait, it stops one short.
+	b := NewBackoff(time.Millisecond, 5*time.Millisecond)
+	calls := 0
+	err := Retry(context.Background(), b, 3, func() error {
+		calls++
+		return &RetryableError{Err: errors.New("rate limited")}
+	})
+	if err == nil {
+		t.Fatal("Retry returned nil error, want exhaustion error")
+	}
+	if calls != 3 {
+		t.Fatalf("calls = %d, want 3", calls)
+	}
+	if b.attempt != 2 {
+		t.Fatalf("backoff.attempt = %d, want 2 (Next should not be called after the final attempt)", b.attempt)
+	}
+}
+
 func TestRetryStopsOnContextCancellation(t *testing.T) {
 	b := NewBackoff(time.Hour, time.Hour)
 	ctx, cancel := context.WithCancel(context.Background())

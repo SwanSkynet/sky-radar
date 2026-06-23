@@ -94,6 +94,29 @@ func TestPollQueriesPointEndpointWithConfiguredCoords(t *testing.T) {
 	}
 }
 
+func TestNewClientClampsRadiusToDocumentedRange(t *testing.T) {
+	cases := map[int]int{-5: 1, 0: 1, 1: 1, 250: 250, 300: 250}
+	for in, want := range cases {
+		c := NewClient(http.DefaultClient, "https://example.com", 0, 0, in)
+		if c.radiusNM != want {
+			t.Errorf("radiusNM for input %d = %d, want %d", in, c.radiusNM, want)
+		}
+	}
+}
+
+func TestPollFailsWhenResponseExceedsSizeLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(make([]byte, maxResponseBodyBytes+1))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client(), server.URL, 0, 0, 1)
+	if _, err := client.Poll(context.Background()); err == nil {
+		t.Fatal("Poll returned nil error, want error on oversized response")
+	}
+}
+
 func TestPollRetriesOn429ThenSucceeds(t *testing.T) {
 	var attempts int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -203,5 +226,15 @@ func TestEnvHelpersFallBackWhenUnset(t *testing.T) {
 	}
 	if got := strconv.Itoa(envInt(key, 0)); got != "42" {
 		t.Errorf("envInt override (strconv check) = %q, want %q", got, "42")
+	}
+}
+
+func TestEnvDurationRejectsNonPositiveValues(t *testing.T) {
+	const key = "SKY_RADAR_TEST_NONPOSITIVE_DURATION"
+	for _, v := range []string{"0", "-1", "-30"} {
+		t.Setenv(key, v)
+		if got := envDuration(key, 9*time.Second); got != 9*time.Second {
+			t.Errorf("envDuration(%q) = %v, want fallback %v", v, got, 9*time.Second)
+		}
 	}
 }

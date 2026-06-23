@@ -74,6 +74,11 @@ func main() {
 		}
 	}()
 
+	if err := redisClient.Ping(ctx); err != nil {
+		logger.Error("redis ping failed", "err", err)
+		os.Exit(1)
+	}
+
 	pollInterval := envDuration("POLL_INTERVAL_SECONDS", defaultPollInterval)
 	rawStateTTL := envDuration("RAW_STATE_TTL_SECONDS", defaultRawStateTTL)
 
@@ -154,7 +159,7 @@ func envInt(key string, fallback int) int {
 
 func envDuration(key string, fallback time.Duration) time.Duration {
 	if v := os.Getenv(key); v != "" {
-		if secs, err := strconv.Atoi(v); err == nil {
+		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
 			return time.Duration(secs) * time.Second
 		}
 	}

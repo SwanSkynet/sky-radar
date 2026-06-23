@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/SwanSkynet/sky-radar/internal/sourceadapter"
@@ -23,6 +24,10 @@ func RawStateKey(provider, icao24 string) string {
 // WriteRawState stores state under RawStateKey, overwriting any previous
 // payload for that provider/aircraft pair, expiring after ttl.
 func (c *Client) WriteRawState(ctx context.Context, state sourceadapter.RawState, ttl time.Duration) error {
+	if strings.TrimSpace(state.Provider) == "" || strings.TrimSpace(state.ICAO24) == "" {
+		return fmt.Errorf("redisutil: write raw state: provider and icao24 are required")
+	}
+
 	data, err := json.Marshal(state)
 	if err != nil {
 		return fmt.Errorf("redisutil: marshal raw state: %w", err)

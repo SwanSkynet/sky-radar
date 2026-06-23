@@ -13,7 +13,14 @@ import (
 	"github.com/SwanSkynet/sky-radar/internal/sourceadapter"
 )
 
-const providerName = "airplanes.live"
+const (
+	providerName = "airplanes.live"
+
+	// maxResponseBodyBytes bounds how much of an upstream response the
+	// adapter will buffer, so a malformed or abusive response can't
+	// exhaust process memory.
+	maxResponseBodyBytes = 5 << 20 // 5 MiB
+)
 
 // aircraftResponse mirrors the airplanes.live /v2 response envelope. See
 // docs/api-docs/airplanes-live-docs.md.
@@ -42,9 +49,15 @@ type Client struct {
 }
 
 // NewClient returns a Client that queries baseURL's /point endpoint
-// centered on (lat, lon) with the given radius in nautical miles (max 250
-// per the provider's documented limit).
+// centered on (lat, lon) with the given radius in nautical miles, clamped
+// to the provider's documented range of 1-250 NM.
 func NewClient(httpClient *http.Client, baseURL string, lat, lon float64, radiusNM int) *Client {
+	if radiusNM < 1 {
+		radiusNM = 1
+	}
+	if radiusNM > 250 {
+		radiusNM = 250
+	}
 	return &Client{
 		httpClient:  httpClient,
 		baseURL:     strings.TrimSuffix(baseURL, "/"),
@@ -107,9 +120,12 @@ func (c *Client) fetch(ctx context.Context, url string) ([]byte, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes+1))
 	if err != nil {
 		return nil, err
+	}
+	if len(body) > maxResponseBodyBytes {
+		return nil, fmt.Errorf("airplaneslive: response exceeds %d bytes", maxResponseBodyBytes)
 	}
 
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError {

@@ -76,6 +76,22 @@ func TestWriteRawStateOverwritesPreviousPayload(t *testing.T) {
 	}
 }
 
+func TestWriteRawStateRejectsMissingProviderOrICAO24(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	cases := []sourceadapter.RawState{
+		{Provider: "", ICAO24: "a1b2c3"},
+		{Provider: "airplanes.live", ICAO24: ""},
+		{Provider: "  ", ICAO24: "  "},
+	}
+	for _, state := range cases {
+		if err := c.WriteRawState(ctx, state, time.Minute); err == nil {
+			t.Errorf("WriteRawState(%+v) returned nil error, want validation error", state)
+		}
+	}
+}
+
 func TestRawStateKeyFormat(t *testing.T) {
 	got := RawStateKey("airplanes.live", "a1b2c3")
 	want := "raw:airplanes.live:a1b2c3"

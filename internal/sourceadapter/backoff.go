@@ -3,6 +3,7 @@ package sourceadapter
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/rand"
 	"time"
 )
@@ -61,6 +62,10 @@ func (e *RetryableError) Unwrap() error { return e.Err }
 // Retry calls fn until it succeeds, returns a non-retryable error, ctx is
 // done, or maxAttempts is exhausted — backing off between attempts per b.
 func Retry(ctx context.Context, b *Backoff, maxAttempts int, fn func() error) error {
+	if maxAttempts <= 0 {
+		return fmt.Errorf("sourceadapter: maxAttempts must be > 0, got %d", maxAttempts)
+	}
+
 	var err error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		err = fn()
@@ -72,6 +77,10 @@ func Retry(ctx context.Context, b *Backoff, maxAttempts int, fn func() error) er
 		var retryable *RetryableError
 		if !errors.As(err, &retryable) {
 			return err
+		}
+
+		if attempt == maxAttempts-1 {
+			break
 		}
 
 		wait := b.Next()
