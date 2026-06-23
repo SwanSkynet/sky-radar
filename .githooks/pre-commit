@@ -10,9 +10,9 @@ staged() {
 	git diff --cached --name-only --diff-filter=ACM -- "$@"
 }
 
-go_files=$(staged '*.go')
-if [[ -n "$go_files" ]]; then
-	unformatted=$(gofmt -l $go_files)
+mapfile -t go_files < <(staged '*.go')
+if ((${#go_files[@]} > 0)); then
+	unformatted=$(gofmt -l -- "${go_files[@]}")
 	if [[ -n "$unformatted" ]]; then
 		echo "gofmt: the following files are not formatted:"
 		echo "$unformatted"
@@ -21,9 +21,9 @@ if [[ -n "$go_files" ]]; then
 	fi
 fi
 
-web_files=$(staged 'web/*.ts' 'web/*.tsx' 'web/*.js' 'web/*.jsx' 'web/*.css' 'web/*.json' 'web/*.html' 'web/*.md')
-if [[ -n "$web_files" ]]; then
-	(cd web && npx --no-install prettier --check $(echo "$web_files" | sed 's|^web/||')) || {
+mapfile -t web_files < <(staged 'web/*.ts' 'web/*.tsx' 'web/*.js' 'web/*.jsx' 'web/*.css' 'web/*.json' 'web/*.html' 'web/*.md')
+if ((${#web_files[@]} > 0)); then
+	(cd web && npx --no-install prettier --check -- "${web_files[@]#web/}") || {
 		echo "prettier: run 'npm run format' in web/ and re-stage."
 		exit 1
 	}
