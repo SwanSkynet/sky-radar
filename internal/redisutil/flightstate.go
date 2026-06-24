@@ -74,6 +74,47 @@ func (c *Client) ReadFlightState(ctx context.Context, icao24 string) (flightmode
 	return state, nil
 }
 
+// PruneExpiredGeoMembers removes flights:geo members whose flight:{icao24}
+// hash has since expired. WriteFlightState's GEOADD has no way to expire
+// itself when the hash TTLs out, so without an explicit prune pass the geo
+// set would grow without bound as aircraft stop reporting (see
+// docs/architecture/data-model.md's Redis key layout). Callers (the
+// normalizer's merge loop) run this once per merge cycle.
+func (c *Client) PruneExpiredGeoMembers(ctx context.Context) (int, error) {
+	members, err := c.rdb.ZRange(ctx, GeoSetKey, 0, -1).Result()
+	if err != nil {
+		return 0, fmt.Errorf("redisutil: prune expired geo members: %w", err)
+	}
+	if len(members) == 0 {
+		return 0, nil
+	}
+
+	pipe := c.rdb.Pipeline()
+	exists := make([]*redis.IntCmd, len(members))
+	for i, m := range members {
+		exists[i] = pipe.Exists(ctx, FlightKey(m))
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		return 0, fmt.Errorf("redisutil: prune expired geo members: %w", err)
+	}
+
+	stale := make([]interface{}, 0, len(members))
+	for i, m := range members {
+		if exists[i].Val() == 0 {
+			stale = append(stale, m)
+		}
+	}
+	if len(stale) == 0 {
+		return 0, nil
+	}
+
+	removed, err := c.rdb.ZRem(ctx, GeoSetKey, stale...).Result()
+	if err != nil {
+		return 0, fmt.Errorf("redisutil: prune expired geo members: %w", err)
+	}
+	return int(removed), nil
+}
+
 // QueryFlightsByBBox returns the current FlightState for every aircraft
 // within bbox, querying the flights:geo geo index per
 // docs/architecture/data-model.md. It uses Redis's GEORADIUS (rather than

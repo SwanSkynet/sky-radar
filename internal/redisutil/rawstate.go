@@ -63,23 +63,42 @@ func (c *Client) ReadRawState(ctx context.Context, provider, icao24 string) (sou
 // docs/tech-stack/backend.md); an entry that fails to decode is skipped
 // rather than failing the whole scan, mirroring MergeAll's per-aircraft
 // fault isolation.
+//
+// Keys are collected via SCAN and then fetched in a single MGET rather
+// than one GET per key, so a keyspace of N raw:* entries costs O(1) round
+// trips instead of O(N) — this runs every merge interval, so the round-trip
+// count matters as the tracked-aircraft count grows.
 func (c *Client) ScanRawStates(ctx context.Context) ([]sourceadapter.RawState, error) {
-	var states []sourceadapter.RawState
-
+	var keys []string
 	iter := c.rdb.Scan(ctx, 0, "raw:*", 0).Iterator()
 	for iter.Next(ctx) {
-		data, err := c.rdb.Get(ctx, iter.Val()).Bytes()
-		if err != nil {
-			continue
-		}
-		var state sourceadapter.RawState
-		if err := json.Unmarshal(data, &state); err != nil {
-			continue
-		}
-		states = append(states, state)
+		keys = append(keys, iter.Val())
 	}
 	if err := iter.Err(); err != nil {
 		return nil, fmt.Errorf("redisutil: scan raw states: %w", err)
+	}
+	if len(keys) == 0 {
+		return nil, nil
+	}
+
+	values, err := c.rdb.MGet(ctx, keys...).Result()
+	if err != nil {
+		return nil, fmt.Errorf("redisutil: scan raw states: %w", err)
+	}
+
+	states := make([]sourceadapter.RawState, 0, len(values))
+	for _, v := range values {
+		s, ok := v.(string)
+		if !ok {
+			// A key expired between SCAN and MGET; skip it rather than
+			// failing the whole batch.
+			continue
+		}
+		var state sourceadapter.RawState
+		if err := json.Unmarshal([]byte(s), &state); err != nil {
+			continue
+		}
+		states = append(states, state)
 	}
 	return states, nil
 }

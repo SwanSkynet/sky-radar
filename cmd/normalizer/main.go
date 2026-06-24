@@ -122,6 +122,12 @@ func runMergeLoop(ctx context.Context, logger *slog.Logger, redisClient *redisut
 			logger.Info("merge cycle complete", "raw_count", len(raws), "flight_count", len(states))
 		}
 
+		if pruned, err := redisClient.PruneExpiredGeoMembers(ctx); err != nil {
+			logger.Error("prune expired geo members failed", "err", err)
+		} else if pruned > 0 {
+			logger.Info("pruned expired geo members", "count", pruned)
+		}
+
 		select {
 		case <-ctx.Done():
 			return

@@ -153,6 +153,58 @@ func TestQueryFlightsByBBoxReturnsOnlyAircraftInside(t *testing.T) {
 	}
 }
 
+func TestPruneExpiredGeoMembersRemovesEntriesWithoutAHash(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	live := sampleFlightState("aaaaaa", 37.0, -122.0)
+	expired := sampleFlightState("bbbbbb", 38.0, -123.0)
+	for _, s := range []flightmodel.FlightState{live, expired} {
+		if err := c.WriteFlightState(ctx, s, time.Minute); err != nil {
+			t.Fatalf("WriteFlightState(%s): %v", s.ICAO24, err)
+		}
+	}
+
+	// Simulate "bbbbbb"'s hash TTLing out while its flights:geo entry (which
+	// has no TTL of its own) lives on.
+	if err := c.rdb.Del(ctx, FlightKey("bbbbbb")).Err(); err != nil {
+		t.Fatalf("Del: %v", err)
+	}
+
+	pruned, err := c.PruneExpiredGeoMembers(ctx)
+	if err != nil {
+		t.Fatalf("PruneExpiredGeoMembers: %v", err)
+	}
+	if pruned != 1 {
+		t.Fatalf("PruneExpiredGeoMembers = %d, want 1", pruned)
+	}
+
+	members, err := c.rdb.ZRange(ctx, GeoSetKey, 0, -1).Result()
+	if err != nil {
+		t.Fatalf("ZRange: %v", err)
+	}
+	if len(members) != 1 || members[0] != "aaaaaa" {
+		t.Errorf("flights:geo members = %v, want [aaaaaa]", members)
+	}
+}
+
+func TestPruneExpiredGeoMembersIsNoopWhenAllLive(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	if err := c.WriteFlightState(ctx, sampleFlightState("aaaaaa", 37.0, -122.0), time.Minute); err != nil {
+		t.Fatalf("WriteFlightState: %v", err)
+	}
+
+	pruned, err := c.PruneExpiredGeoMembers(ctx)
+	if err != nil {
+		t.Fatalf("PruneExpiredGeoMembers: %v", err)
+	}
+	if pruned != 0 {
+		t.Errorf("PruneExpiredGeoMembers = %d, want 0", pruned)
+	}
+}
+
 func TestQueryFlightsByBBoxReturnsEmptyWhenNoneMatch(t *testing.T) {
 	c := newTestClient(t)
 	ctx := context.Background()
