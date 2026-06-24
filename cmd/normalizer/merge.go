@@ -27,17 +27,22 @@ const freshnessTieWindow = 15 * time.Second
 //  3. Sources lists every provider that reported, regardless of which
 //     report's fields won.
 //
-// A report whose payload fails to parse is dropped and does not block
-// merging the rest; Merge only fails if none of raws parse.
+// A report whose payload fails to parse, or whose payload ICAO24 doesn't
+// match icao24 (a mismatched/corrupt envelope), is dropped and does not
+// block merging the rest; Merge only fails if none of raws parse.
 func Merge(icao24 string, raws []sourceadapter.RawState) (flightmodel.FlightState, error) {
 	if len(raws) == 0 {
 		return flightmodel.FlightState{}, fmt.Errorf("normalizer: merge %s: no reports", icao24)
 	}
 
+	expectedICAO24 := strings.ToLower(icao24)
 	reports := make([]providerReport, 0, len(raws))
 	for _, raw := range raws {
 		report, err := ParseRawState(raw)
 		if err != nil {
+			continue
+		}
+		if report.ICAO24 != expectedICAO24 {
 			continue
 		}
 		reports = append(reports, report)

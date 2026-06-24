@@ -189,6 +189,40 @@ func TestMergeThreeProvidersCreditsAllSources(t *testing.T) {
 	}
 }
 
+func TestMergeDropsReportWhosePayloadICAO24DoesNotMatchKey(t *testing.T) {
+	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+
+	// The RawState's ICAO24 (the merge key, e.g. derived from the Redis
+	// key it was read from) claims "a1b2c3", but the payload itself
+	// reports a different aircraft's hex. This must be dropped rather
+	// than letting the wrong aircraft's fields populate a1b2c3's state.
+	mismatched := readsbRaw(t, "airplanes.live", "ffffff", now, map[string]any{"lat": 99.0, "lon": 99.0})
+	mismatched.ICAO24 = "a1b2c3"
+
+	good := readsbRaw(t, "adsb.lol", "a1b2c3", now, map[string]any{"lat": 1.0, "lon": 2.0})
+
+	got, err := Merge("a1b2c3", []sourceadapter.RawState{mismatched, good})
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	if want := []string{"adsb.lol"}; !equalStrings(got.Sources, want) {
+		t.Errorf("Sources = %v, want %v (mismatched-ICAO24 report dropped)", got.Sources, want)
+	}
+	if got.Lat != 1.0 || got.Lon != 2.0 {
+		t.Errorf("Lat/Lon = %v/%v, want the matching report's 1.0/2.0", got.Lat, got.Lon)
+	}
+}
+
+func TestMergeAllMismatchedICAO24ReturnsError(t *testing.T) {
+	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+	mismatched := readsbRaw(t, "airplanes.live", "ffffff", now, map[string]any{"lat": 99.0, "lon": 99.0})
+	mismatched.ICAO24 = "a1b2c3"
+
+	if _, err := Merge("a1b2c3", []sourceadapter.RawState{mismatched}); err == nil {
+		t.Fatal("Merge() with only a mismatched-ICAO24 report: want error, got nil")
+	}
+}
+
 func TestMergeNoReportsReturnsError(t *testing.T) {
 	if _, err := Merge("a1b2c3", nil); err == nil {
 		t.Fatal("Merge() with no reports: want error, got nil")

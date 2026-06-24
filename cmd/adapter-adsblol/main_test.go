@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -114,7 +113,7 @@ func TestRunPollLoopContinuesPollingAcrossTicks(t *testing.T) {
 
 func TestEnvHelpersFallBackWhenUnset(t *testing.T) {
 	const key = "ADAPTER_ADSBLOL_TEST_UNSET_KEY"
-	os.Unsetenv(key)
+	t.Setenv(key, "")
 
 	if got := envString(key, "fallback"); got != "fallback" {
 		t.Errorf("envString = %q, want fallback", got)
