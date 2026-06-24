@@ -56,3 +56,30 @@ func (c *Client) ReadRawState(ctx context.Context, provider, icao24 string) (sou
 	}
 	return state, nil
 }
+
+// ScanRawStates returns every RawState currently written under the raw:*
+// keyspace, across every provider and aircraft. The normalizer's merge
+// loop uses this to discover what's currently being reported (see
+// docs/tech-stack/backend.md); an entry that fails to decode is skipped
+// rather than failing the whole scan, mirroring MergeAll's per-aircraft
+// fault isolation.
+func (c *Client) ScanRawStates(ctx context.Context) ([]sourceadapter.RawState, error) {
+	var states []sourceadapter.RawState
+
+	iter := c.rdb.Scan(ctx, 0, "raw:*", 0).Iterator()
+	for iter.Next(ctx) {
+		data, err := c.rdb.Get(ctx, iter.Val()).Bytes()
+		if err != nil {
+			continue
+		}
+		var state sourceadapter.RawState
+		if err := json.Unmarshal(data, &state); err != nil {
+			continue
+		}
+		states = append(states, state)
+	}
+	if err := iter.Err(); err != nil {
+		return nil, fmt.Errorf("redisutil: scan raw states: %w", err)
+	}
+	return states, nil
+}
