@@ -18,6 +18,9 @@ services:
       - "8081:8081"
     environment:
       - PORT=8081
+      - REDIS_ADDR=redis:6379
+    depends_on:
+      - redis
 
   adapter-adsblol:
     build:
@@ -29,6 +32,9 @@ services:
       - "8082:8082"
     environment:
       - PORT=8082
+      - REDIS_ADDR=redis:6379
+    depends_on:
+      - redis
 
   adapter-airplaneslive:
     build:
@@ -40,6 +46,9 @@ services:
       - "8083:8083"
     environment:
       - PORT=8083
+      - REDIS_ADDR=redis:6379
+    depends_on:
+      - redis
 
   normalizer:
     build:

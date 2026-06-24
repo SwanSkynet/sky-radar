@@ -7,3 +7,9 @@ prompts/
 # Node (web/node_modules has its own .gitignore but this covers root tooling)
 node_modules/
 web/dist/
+
+# macOS
+.DS_Store
+
+# Claude Code local settings (personal, not shared)
+.claude/
