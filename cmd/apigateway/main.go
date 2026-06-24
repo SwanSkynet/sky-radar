@@ -10,16 +10,31 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/SwanSkynet/sky-radar/internal/redisutil"
+	"github.com/redis/go-redis/v9"
 )
 
 const (
 	serviceName = "apigateway"
 	defaultPort = "8080"
+
+	defaultRedisAddr = "localhost:6379"
 )
 
 func healthz(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
+}
+
+// newRouter wires the public REST routes onto a fresh mux. Pulled out of
+// main so tests can exercise the same routing this binary actually serves.
+func newRouter(api *flightsAPI) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", healthz)
+	mux.HandleFunc("GET /flights", api.listFlights)
+	mux.HandleFunc("GET /flights/{icao24}", api.getFlight)
+	return mux
 }
 
 func main() {
@@ -30,20 +45,31 @@ func main() {
 		port = defaultPort
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", healthz)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	redisClient := redisutil.New(&redis.Options{Addr: envString("REDIS_ADDR", defaultRedisAddr)})
+	defer func() {
+		if err := redisClient.Close(); err != nil {
+			logger.Error("redis close error", "err", err)
+		}
+	}()
+
+	if err := redisClient.Ping(ctx); err != nil {
+		logger.Error("redis ping failed", "err", err)
+		os.Exit(1)
+	}
+
+	api := &flightsAPI{redis: redisClient, logger: logger}
 
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           mux,
+		Handler:           newRouter(api),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	go func() {
 		logger.Info("starting server", "addr", srv.Addr)
@@ -62,4 +88,11 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.Error("shutdown error", "err", err)
 	}
+}
+
+func envString(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }

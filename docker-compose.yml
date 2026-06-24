@@ -3,6 +3,11 @@ services:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
 
   # NATS JetStream and Postgres are intentionally absent: per
   # docs/implementation-plan.md, both are introduced in Phase 2 once the
@@ -20,7 +25,8 @@ services:
       - PORT=8081
       - REDIS_ADDR=redis:6379
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
 
   adapter-adsblol:
     build:
@@ -34,7 +40,8 @@ services:
       - PORT=8082
       - REDIS_ADDR=redis:6379
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
 
   adapter-airplaneslive:
     build:
@@ -48,7 +55,8 @@ services:
       - PORT=8083
       - REDIS_ADDR=redis:6379
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
 
   normalizer:
     build:
@@ -60,8 +68,10 @@ services:
       - "8084:8084"
     environment:
       - PORT=8084
+      - REDIS_ADDR=redis:6379
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
 
   eventengine:
     build:
@@ -84,8 +94,10 @@ services:
       - "8080:8080"
     environment:
       - PORT=8080
+      - REDIS_ADDR=redis:6379
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
 
   web:
     image: node:22-alpine

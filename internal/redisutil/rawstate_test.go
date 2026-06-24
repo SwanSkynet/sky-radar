@@ -99,3 +99,39 @@ func TestRawStateKeyFormat(t *testing.T) {
 		t.Errorf("RawStateKey = %q, want %q", got, want)
 	}
 }
+
+func TestScanRawStatesReturnsEveryProviderAndAircraft(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	states := []sourceadapter.RawState{
+		{Provider: "opensky", ICAO24: "aaaaaa", Payload: json.RawMessage(`{"v":1}`)},
+		{Provider: "adsb.lol", ICAO24: "aaaaaa", Payload: json.RawMessage(`{"v":2}`)},
+		{Provider: "airplanes.live", ICAO24: "bbbbbb", Payload: json.RawMessage(`{"v":3}`)},
+	}
+	for _, s := range states {
+		if err := c.WriteRawState(ctx, s, time.Minute); err != nil {
+			t.Fatalf("WriteRawState(%+v): %v", s, err)
+		}
+	}
+
+	got, err := c.ScanRawStates(ctx)
+	if err != nil {
+		t.Fatalf("ScanRawStates: %v", err)
+	}
+	if len(got) != len(states) {
+		t.Fatalf("ScanRawStates returned %d states, want %d: %+v", len(got), len(states), got)
+	}
+}
+
+func TestScanRawStatesReturnsEmptyWhenNoneWritten(t *testing.T) {
+	c := newTestClient(t)
+
+	got, err := c.ScanRawStates(context.Background())
+	if err != nil {
+		t.Fatalf("ScanRawStates: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("ScanRawStates returned %d states, want 0", len(got))
+	}
+}

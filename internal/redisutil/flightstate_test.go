@@ -1,0 +1,229 @@
+package redisutil
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/SwanSkynet/sky-radar/internal/flightmodel"
+	"github.com/SwanSkynet/sky-radar/internal/geo"
+	"github.com/redis/go-redis/v9"
+)
+
+func sampleFlightState(icao24 string, lat, lon float64) flightmodel.FlightState {
+	callsign := "UAL123"
+	altBaro := 35000
+	gs := 420.5
+	return flightmodel.FlightState{
+		ICAO24:          icao24,
+		Callsign:        &callsign,
+		Lat:             lat,
+		Lon:             lon,
+		AltitudeBaroFt:  &altBaro,
+		GroundSpeedKt:   &gs,
+		OnGround:        false,
+		Sources:         []string{"adsb.lol", "opensky"},
+		PositionQuality: flightmodel.PositionQualityADSB,
+		LastSeenUTC:     time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC),
+	}
+}
+
+func TestWriteAndReadFlightState(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+	want := sampleFlightState("a1b2c3", 37.6188, -122.3758)
+
+	if err := c.WriteFlightState(ctx, want, time.Minute); err != nil {
+		t.Fatalf("WriteFlightState: %v", err)
+	}
+
+	got, err := c.ReadFlightState(ctx, "a1b2c3")
+	if err != nil {
+		t.Fatalf("ReadFlightState: %v", err)
+	}
+
+	if got.ICAO24 != want.ICAO24 || got.Lat != want.Lat || got.Lon != want.Lon {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+	if got.Callsign == nil || *got.Callsign != *want.Callsign {
+		t.Errorf("Callsign = %v, want %v", got.Callsign, *want.Callsign)
+	}
+	if got.AltitudeBaroFt == nil || *got.AltitudeBaroFt != *want.AltitudeBaroFt {
+		t.Errorf("AltitudeBaroFt = %v, want %v", got.AltitudeBaroFt, *want.AltitudeBaroFt)
+	}
+	if len(got.Sources) != 2 || got.Sources[0] != "adsb.lol" || got.Sources[1] != "opensky" {
+		t.Errorf("Sources = %v, want [adsb.lol opensky]", got.Sources)
+	}
+	if got.PositionQuality != want.PositionQuality {
+		t.Errorf("PositionQuality = %v, want %v", got.PositionQuality, want.PositionQuality)
+	}
+	if !got.LastSeenUTC.Equal(want.LastSeenUTC) {
+		t.Errorf("LastSeenUTC = %v, want %v", got.LastSeenUTC, want.LastSeenUTC)
+	}
+}
+
+func TestReadFlightStateMissingReturnsRedisNil(t *testing.T) {
+	c := newTestClient(t)
+	_, err := c.ReadFlightState(context.Background(), "doesnotexist")
+	if !errors.Is(err, redis.Nil) {
+		t.Fatalf("err = %v, want wrapped redis.Nil", err)
+	}
+}
+
+func TestWriteFlightStateRejectsMissingICAO24(t *testing.T) {
+	c := newTestClient(t)
+	if err := c.WriteFlightState(context.Background(), flightmodel.FlightState{}, time.Minute); err == nil {
+		t.Fatal("WriteFlightState(empty icao24): want error, got nil")
+	}
+}
+
+func TestWriteFlightStateOverwritesStaleOptionalFields(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	callsign := "UAL123"
+	first := flightmodel.FlightState{
+		ICAO24:          "a1b2c3",
+		Callsign:        &callsign,
+		LastSeenUTC:     time.Now().UTC(),
+		PositionQuality: flightmodel.PositionQualityADSB,
+	}
+	if err := c.WriteFlightState(ctx, first, time.Minute); err != nil {
+		t.Fatalf("WriteFlightState(first): %v", err)
+	}
+
+	// Second winner no longer reports a callsign; the stale value from the
+	// first write must not leak through.
+	second := flightmodel.FlightState{
+		ICAO24:          "a1b2c3",
+		LastSeenUTC:     time.Now().UTC(),
+		PositionQuality: flightmodel.PositionQualityADSB,
+	}
+	if err := c.WriteFlightState(ctx, second, time.Minute); err != nil {
+		t.Fatalf("WriteFlightState(second): %v", err)
+	}
+
+	got, err := c.ReadFlightState(ctx, "a1b2c3")
+	if err != nil {
+		t.Fatalf("ReadFlightState: %v", err)
+	}
+	if got.Callsign != nil {
+		t.Errorf("Callsign = %v, want nil (stale value should not persist)", *got.Callsign)
+	}
+}
+
+func TestFlightKeyFormat(t *testing.T) {
+	got := FlightKey("A1B2C3")
+	want := "flight:a1b2c3"
+	if got != want {
+		t.Errorf("FlightKey = %q, want %q", got, want)
+	}
+}
+
+func TestQueryFlightsByBBoxReturnsOnlyAircraftInside(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	inside := sampleFlightState("aaaaaa", 37.0, -122.0)
+	alsoInside := sampleFlightState("bbbbbb", 37.5, -121.5)
+	outside := sampleFlightState("cccccc", 50.0, -100.0)
+
+	for _, s := range []flightmodel.FlightState{inside, alsoInside, outside} {
+		if err := c.WriteFlightState(ctx, s, time.Minute); err != nil {
+			t.Fatalf("WriteFlightState(%s): %v", s.ICAO24, err)
+		}
+	}
+
+	bbox, err := geo.ParseBBox("-123,36,-121,38")
+	if err != nil {
+		t.Fatalf("ParseBBox: %v", err)
+	}
+
+	got, err := c.QueryFlightsByBBox(ctx, bbox)
+	if err != nil {
+		t.Fatalf("QueryFlightsByBBox: %v", err)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("QueryFlightsByBBox returned %d states, want 2: %+v", len(got), got)
+	}
+	if got[0].ICAO24 != "aaaaaa" || got[1].ICAO24 != "bbbbbb" {
+		t.Errorf("ICAO24s = [%s, %s], want [aaaaaa, bbbbbb]", got[0].ICAO24, got[1].ICAO24)
+	}
+}
+
+func TestPruneExpiredGeoMembersRemovesEntriesWithoutAHash(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	live := sampleFlightState("aaaaaa", 37.0, -122.0)
+	expired := sampleFlightState("bbbbbb", 38.0, -123.0)
+	for _, s := range []flightmodel.FlightState{live, expired} {
+		if err := c.WriteFlightState(ctx, s, time.Minute); err != nil {
+			t.Fatalf("WriteFlightState(%s): %v", s.ICAO24, err)
+		}
+	}
+
+	// Simulate "bbbbbb"'s hash TTLing out while its flights:geo entry (which
+	// has no TTL of its own) lives on.
+	if err := c.rdb.Del(ctx, FlightKey("bbbbbb")).Err(); err != nil {
+		t.Fatalf("Del: %v", err)
+	}
+
+	pruned, err := c.PruneExpiredGeoMembers(ctx)
+	if err != nil {
+		t.Fatalf("PruneExpiredGeoMembers: %v", err)
+	}
+	if pruned != 1 {
+		t.Fatalf("PruneExpiredGeoMembers = %d, want 1", pruned)
+	}
+
+	members, err := c.rdb.ZRange(ctx, GeoSetKey, 0, -1).Result()
+	if err != nil {
+		t.Fatalf("ZRange: %v", err)
+	}
+	if len(members) != 1 || members[0] != "aaaaaa" {
+		t.Errorf("flights:geo members = %v, want [aaaaaa]", members)
+	}
+}
+
+func TestPruneExpiredGeoMembersIsNoopWhenAllLive(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	if err := c.WriteFlightState(ctx, sampleFlightState("aaaaaa", 37.0, -122.0), time.Minute); err != nil {
+		t.Fatalf("WriteFlightState: %v", err)
+	}
+
+	pruned, err := c.PruneExpiredGeoMembers(ctx)
+	if err != nil {
+		t.Fatalf("PruneExpiredGeoMembers: %v", err)
+	}
+	if pruned != 0 {
+		t.Errorf("PruneExpiredGeoMembers = %d, want 0", pruned)
+	}
+}
+
+func TestQueryFlightsByBBoxReturnsEmptyWhenNoneMatch(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	outside := sampleFlightState("cccccc", 50.0, -100.0)
+	if err := c.WriteFlightState(ctx, outside, time.Minute); err != nil {
+		t.Fatalf("WriteFlightState: %v", err)
+	}
+
+	bbox, err := geo.ParseBBox("-123,36,-121,38")
+	if err != nil {
+		t.Fatalf("ParseBBox: %v", err)
+	}
+
+	got, err := c.QueryFlightsByBBox(ctx, bbox)
+	if err != nil {
+		t.Fatalf("QueryFlightsByBBox: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("QueryFlightsByBBox returned %d states, want 0: %+v", len(got), got)
+	}
+}
