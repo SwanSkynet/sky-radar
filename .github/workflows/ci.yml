@@ -116,9 +116,13 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
     strategy:
       matrix:
         service:
+          - redis
           - adapter-opensky
           - adapter-adsblol
           - adapter-airplaneslive
@@ -131,6 +135,9 @@ jobs:
         with:
           persist-credentials: false
       - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1
+      # redis is deployed first (matrix order + max-parallel: 1) since
+      # normalizer/apigateway depend on it being up. It pulls redis:7-alpine
+      # directly per its own fly.toml, so no --image override is needed.
       # web has no GHCR image (it's not in container-push's matrix — see
       # that job's comment), so it builds via Fly's remote builder using
       # the Dockerfile/build-args in its own fly.toml. Every other service
@@ -138,6 +145,8 @@ jobs:
       - run: |
           if [ "${{ matrix.service }}" = "web" ]; then
             flyctl deploy --config deploy/fly/web.toml --remote-only
+          elif [ "${{ matrix.service }}" = "redis" ]; then
+            flyctl deploy --config deploy/fly/redis.toml
           else
             flyctl deploy --config "deploy/fly/${{ matrix.service }}.toml" \
               --image "ghcr.io/${{ github.repository_owner }}/sky-radar-${{ matrix.service }}:${{ github.sha }}"

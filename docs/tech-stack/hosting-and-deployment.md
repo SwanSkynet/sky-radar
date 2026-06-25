@@ -70,7 +70,7 @@ All app-to-app traffic (adapters/normalizer → Redis) uses Fly's private networ
 
 1. **Every PR:** `backend`/`frontend` (lint, vet, unit tests, frontend build) plus `container-build`, which builds every backend service's image from `deploy/go.Dockerfile` with `push: false` — this is the "container build (no push)" step from the intended pipeline above, now real.
 2. **On merge to `main`:** `container-push` builds and pushes each backend image to GHCR, tagged `:latest` and `:<sha>`.
-3. **Production promotion:** `deploy-production` runs behind a `production` GitHub Environment (configure a required-reviewer protection rule on that environment for the manual approval gate). It promotes the exact image `container-push` built for the backend services (`flyctl deploy --image ghcr.io/...:<sha>`), and builds `web` directly via Fly's remote builder (it isn't pushed to GHCR, since its `VITE_API_BASE_URL` build arg is Fly-deployment-specific).
+3. **Production promotion:** `deploy-production` runs behind a `production` GitHub Environment (configure a required-reviewer protection rule on that environment for the manual approval gate). It deploys `redis` first (`flyctl deploy --config deploy/fly/redis.toml`, pulling `redis:7-alpine` directly) so dependent services have a running Redis before they start, then promotes the exact image `container-push` built for the backend services (`flyctl deploy --image ghcr.io/...:<sha>`), and builds `web` last directly via Fly's remote builder (it isn't pushed to GHCR, since its `VITE_API_BASE_URL` build arg is Fly-deployment-specific). The matrix runs with `max-parallel: 1` in this order, and a `concurrency` group serializes overlapping `deploy-production` runs across merges.
 
 There is no separate staging tier yet — Phase 1 promotes straight to production. Standing up a parallel staging Fly org/app set is deferred until there's more to validate against it (load/chaos testing lands in Phase 3); doing it now would be infrastructure ahead of need, which cuts against this project's own stated principle (see [`implementation-plan.md`](../implementation-plan.md#cross-cutting-notes)).
 
@@ -79,8 +79,8 @@ There is no separate staging tier yet — Phase 1 promotes straight to productio
 A maintainer with Fly access must, once:
 
 1. `fly apps create` each app name listed in the table above (Fly app names are globally unique — rename in both the relevant `deploy/fly/*.toml` and this table if a name is taken).
-2. `fly volumes create sky_radar_redis_data --region sjc --size 1 -a sky-radar-redis` (see [`deploy/fly/redis.toml`](../../deploy/fly/redis.toml)).
+2. `fly volumes create sky_radar_redis_data --region sjc --size 1 -a sky-radar-redis` (see [`deploy/fly/redis.toml`](../../deploy/fly/redis.toml)), then `flyctl deploy --config deploy/fly/redis.toml` once so `sky-radar-redis` is running before the first CI-driven deploy of the dependent services.
 3. Add a `FLY_API_TOKEN` repository secret (`fly tokens create deploy`) and create a `production` GitHub Environment with a required-reviewer rule, so `deploy-production` has both the credential and the manual approval gate.
 4. Optionally set `OPENSKY_CLIENT_ID`/`OPENSKY_CLIENT_SECRET` via `fly secrets set -a sky-radar-adapter-opensky` (the adapter runs anonymously, at a lower rate limit, without them).
 
-Until step 3 is done, `deploy-production` will fail at the `flyctl deploy` step — `container-build`/`container-push` and the rest of CI are unaffected.
+Until step 3 is done, `deploy-production` will fail at the `flyctl deploy` step — `container-build`/`container-push` and the rest of CI are unaffected. After that, `deploy-production` keeps `sky-radar-redis` up to date on every merge to `main` (see the CI/CD wiring above), so step 2's manual deploy is only needed for the very first run.
