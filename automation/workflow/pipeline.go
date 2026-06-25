@@ -53,6 +53,11 @@ func PipelineWorkflow(ctx workflow.Context) error {
 
 		approved := false
 		for !approved {
+			// The webhook sends this signal with a nil payload for every
+			// pull_request_review event on the repo, not just this PR, so
+			// it's intentionally unscoped. FetchReviewStatus below always
+			// re-derives the real verdict from prNumber, so a stray signal
+			// from another PR just costs one harmless extra poll.
 			reviewChan.Receive(ctx, nil) // blocks until webhook signals us
 
 			var result activities.ReviewResult

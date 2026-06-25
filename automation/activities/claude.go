@@ -20,7 +20,7 @@ import (
 // Bash itself stays available: this project's own tasks need outbound HTTP
 // to public ADS-B providers (adsb.lol, OpenSky, airplanes.live), so blocking
 // network access at the Bash level would break legitimate work.
-func invokeClaude(ctx context.Context, prompt string) error {
+func invokeClaude(ctx context.Context, root, prompt string) error {
 	cmd := exec.CommandContext(ctx, "claude",
 		"-p",
 		"--output-format", "json",
@@ -28,7 +28,7 @@ func invokeClaude(ctx context.Context, prompt string) error {
 		"--strict-mcp-config",
 		"--disallowedTools", "WebFetch,WebSearch",
 	)
-	cmd.Dir = RepoRoot
+	cmd.Dir = root
 	cmd.Stdin = strings.NewReader(prompt)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -43,19 +43,27 @@ func invokeClaude(ctx context.Context, prompt string) error {
 // task's prompt, and commits + pushes whatever it produced. Commit/push is
 // done here deterministically rather than trusting the model to do it.
 func RunClaude(ctx context.Context, task Task) error {
-	if err := startBranch(task.Branch); err != nil {
-		return fmt.Errorf("starting branch %s: %w", task.Branch, err)
-	}
-	if err := invokeClaude(ctx, task.Prompt); err != nil {
+	root, err := RepoRoot()
+	if err != nil {
 		return err
 	}
-	return commitAndPush(task.Branch, "Automated: "+task.ID)
+	if err := startBranch(ctx, root, task.Branch); err != nil {
+		return fmt.Errorf("starting branch %s: %w", task.Branch, err)
+	}
+	if err := invokeClaude(ctx, root, task.Prompt); err != nil {
+		return err
+	}
+	return commitAndPush(ctx, root, task.Branch, "Automated: "+task.ID)
 }
 
 // AddressReviewFeedback re-invokes Claude on the task's existing branch with
 // the reviewer's feedback appended, then commits + pushes the fix.
 func AddressReviewFeedback(ctx context.Context, task Task, feedback string) error {
-	if err := runGit(RepoRoot, "checkout", task.Branch); err != nil {
+	root, err := RepoRoot()
+	if err != nil {
+		return err
+	}
+	if err := runGit(ctx, root, "checkout", task.Branch); err != nil {
 		return fmt.Errorf("checking out branch %s: %w", task.Branch, err)
 	}
 
@@ -65,42 +73,57 @@ func AddressReviewFeedback(ctx context.Context, task Task, feedback string) erro
 			"actionable comment; for nitpicks, only fix them if they're trivial:\n\n%s",
 		task.Prompt, task.PR, feedback,
 	)
-	if err := invokeClaude(ctx, prompt); err != nil {
+	if err := invokeClaude(ctx, root, prompt); err != nil {
 		return err
 	}
-	return commitAndPush(task.Branch, fmt.Sprintf("Automated: address review feedback on PR #%d", task.PR))
+	return commitAndPush(ctx, root, task.Branch, fmt.Sprintf("Automated: address review feedback on PR #%d", task.PR))
 }
 
 // startBranch resumes an existing branch (e.g. an activity retry after a
 // crash) or, for a fresh task, branches off up-to-date main.
-func startBranch(branch string) error {
-	if err := runGit(RepoRoot, "checkout", branch); err == nil {
+func startBranch(ctx context.Context, root, branch string) error {
+	if err := runGit(ctx, root, "checkout", branch); err == nil {
 		return nil
 	}
-	if err := runGit(RepoRoot, "checkout", "main"); err != nil {
+	if err := runGit(ctx, root, "checkout", "main"); err != nil {
 		return err
 	}
-	if err := runGit(RepoRoot, "pull", "--ff-only", "origin", "main"); err != nil {
+	if err := runGit(ctx, root, "pull", "--ff-only", "origin", "main"); err != nil {
 		return err
 	}
-	return runGit(RepoRoot, "checkout", "-b", branch)
+	return runGit(ctx, root, "checkout", "-b", branch)
 }
 
-func commitAndPush(branch, message string) error {
-	if err := runGit(RepoRoot, "add", "-A"); err != nil {
+func commitAndPush(ctx context.Context, root, branch, message string) error {
+	if err := runGit(ctx, root, "add", "-A"); err != nil {
 		return err
 	}
-	if err := runGit(RepoRoot, "commit", "-m", message); err != nil {
-		fmt.Println("git commit produced no changes (or already committed):", err)
+	if err := commitIfChanged(ctx, root, message); err != nil {
+		return err
 	}
-	if err := runGit(RepoRoot, "push", "-u", "origin", branch); err != nil {
+	if err := runGit(ctx, root, "push", "-u", "origin", branch); err != nil {
 		return fmt.Errorf("git push: %w", err)
 	}
 	return nil
 }
 
-func runGit(dir string, args ...string) error {
-	cmd := exec.Command("git", args...)
+// commitIfChanged commits staged changes, tolerating only the no-op case
+// where there's nothing to commit (e.g. Claude produced no net diff).
+// Real failures (hook rejections, lock contention, bad config) are
+// propagated instead of being swallowed.
+func commitIfChanged(ctx context.Context, dir, message string) error {
+	cmd := exec.CommandContext(ctx, "git", "commit", "-m", message)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	os.Stdout.Write(out)
+	if err != nil && !strings.Contains(string(out), "nothing to commit") {
+		return fmt.Errorf("git commit: %w", err)
+	}
+	return nil
+}
+
+func runGit(ctx context.Context, dir string, args ...string) error {
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

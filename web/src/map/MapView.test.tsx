@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, waitFor } from "@testing-library/react";
 
 // jsdom has no WebGL context, so the real maplibre-gl/@deck.gl/mapbox
@@ -50,6 +50,10 @@ describe("MapView", () => {
         json: async () => [],
       }),
     );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("mounts the map and issues a flights request", async () => {

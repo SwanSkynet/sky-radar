@@ -21,9 +21,13 @@ import (
 // anyone who finds the URL could fire spurious review-submitted signals.
 var webhookSecret = os.Getenv("GITHUB_WEBHOOK_SECRET")
 
+// allowUnsignedWebhook opts into accepting unsigned requests, for local dev
+// only. Without GITHUB_WEBHOOK_SECRET set, the endpoint fails closed.
+var allowUnsignedWebhook = os.Getenv("WEBHOOK_ALLOW_UNSIGNED") == "true"
+
 func validSignature(body []byte, header string) bool {
 	if webhookSecret == "" {
-		return true // no secret configured; skip verification
+		return allowUnsignedWebhook
 	}
 	const prefix = "sha256="
 	if len(header) <= len(prefix) || header[:len(prefix)] != prefix {
@@ -37,7 +41,11 @@ func validSignature(body []byte, header string) bool {
 
 func main() {
 	if webhookSecret == "" {
-		log.Println("WARNING: GITHUB_WEBHOOK_SECRET not set; webhook signature verification is disabled")
+		if allowUnsignedWebhook {
+			log.Println("WARNING: GITHUB_WEBHOOK_SECRET not set; accepting unsigned requests (WEBHOOK_ALLOW_UNSIGNED=true)")
+		} else {
+			log.Println("WARNING: GITHUB_WEBHOOK_SECRET not set; all webhook requests will be rejected. Set WEBHOOK_ALLOW_UNSIGNED=true for local dev.")
+		}
 	}
 
 	c, err := client.Dial(client.Options{HostPort: "localhost:7233"})
