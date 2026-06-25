@@ -3,7 +3,11 @@ import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { MapboxOverlay } from "@deck.gl/mapbox";
 import { ScatterplotLayer } from "@deck.gl/layers";
-import { fetchFlightsByBBox, type BBox, type FlightState } from "../api/flights";
+import {
+  fetchFlightsByBBox,
+  type BBox,
+  type FlightState,
+} from "../api/flights";
 import { useFlightStore } from "../store/useFlightStore";
 
 // Frontend polls REST per docs/prd/phase-1-foundation.md (WebSocket push is
@@ -27,7 +31,9 @@ function clampBBox(bounds: maplibregl.LngLatBounds): BBox | null {
   return { minLon, minLat, maxLon, maxLat };
 }
 
-function buildAircraftLayer(flights: FlightState[]): ScatterplotLayer<FlightState> {
+function buildAircraftLayer(
+  flights: FlightState[],
+): ScatterplotLayer<FlightState> {
   return new ScatterplotLayer<FlightState>({
     id: "aircraft",
     data: flights,
@@ -84,10 +90,15 @@ export function MapView() {
           if (!cancelled) setFlights(data);
         })
         .catch((err: unknown) => {
-          if (cancelled || (err instanceof DOMException && err.name === "AbortError")) {
+          if (
+            cancelled ||
+            (err instanceof DOMException && err.name === "AbortError")
+          ) {
             return;
           }
-          setError(err instanceof Error ? err.message : "failed to load flights");
+          setError(
+            err instanceof Error ? err.message : "failed to load flights",
+          );
         });
     };
 
@@ -116,14 +127,13 @@ export function MapView() {
           that stylesheet loads after Tailwind's, it wins the cascade tie
           and silently collapses this div to height 0. Inline styles always
           beat class-based rules regardless of load order. */}
-      <div
-        ref={containerRef}
-        style={{ position: "absolute", inset: 0 }}
-      />
+      <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
       <div className="absolute top-3 left-3 z-10 rounded bg-bg/90 px-3 py-2 text-left text-sm text-text shadow">
         <div>{flights.length} aircraft in view</div>
         {lastUpdated && (
-          <div className="text-xs">updated {lastUpdated.toLocaleTimeString()}</div>
+          <div className="text-xs">
+            updated {lastUpdated.toLocaleTimeString()}
+          </div>
         )}
         {error && <div className="text-xs text-red-500">{error}</div>}
       </div>

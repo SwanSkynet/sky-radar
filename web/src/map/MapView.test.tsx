@@ -63,7 +63,8 @@ describe("MapView", () => {
       expect(fetch).toHaveBeenCalled();
     });
 
-    const calledUrl = (fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    const calledUrl = (fetch as ReturnType<typeof vi.fn>).mock
+      .calls[0][0] as string;
     expect(calledUrl).toContain("/flights?bbox=");
   });
 });
