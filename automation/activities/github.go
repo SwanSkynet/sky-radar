@@ -90,6 +90,7 @@ type ghReview struct {
 	} `json:"user"`
 	State       string    `json:"state"`
 	Body        string    `json:"body"`
+	CommitID    string    `json:"commit_id"`
 	SubmittedAt time.Time `json:"submitted_at"`
 }
 
@@ -97,11 +98,33 @@ type ghReview struct {
 // recent verdict, distinguishing approved / changes-requested / no-verdict-yet
 // by the review's actual `state` field rather than just checking whether any
 // review text exists.
+//
+// Two pull_request_review webhook deliveries can land as back-to-back signals
+// (GitHub sometimes sends more than one for what's logically the same event),
+// and the second Receive() fires before CodeRabbit has reviewed the commit the
+// first round just pushed. Without the commit_id check below, that replays
+// the same already-fixed feedback through AddressFeedback a second time. So
+// a review only counts if it was submitted against the PR's *current* head
+// commit; anything reviewing an older commit is stale and treated as pending.
 func FetchReviewStatus(ctx context.Context, prNumber int) (ReviewResult, error) {
 	root, err := RepoRoot()
 	if err != nil {
 		return ReviewResult{}, err
 	}
+
+	headCmd := exec.CommandContext(ctx, "gh", "pr", "view", fmt.Sprintf("%d", prNumber), "--json", "headRefOid")
+	headCmd.Dir = root
+	headOut, err := headCmd.Output()
+	if err != nil {
+		return ReviewResult{}, fmt.Errorf("gh pr view headRefOid: %w", err)
+	}
+	var head struct {
+		HeadRefOid string `json:"headRefOid"`
+	}
+	if err := json.Unmarshal(headOut, &head); err != nil {
+		return ReviewResult{}, fmt.Errorf("parsing head ref: %w", err)
+	}
+
 	cmd := exec.CommandContext(ctx, "gh", "api", "--paginate", fmt.Sprintf("repos/{owner}/{repo}/pulls/%d/reviews", prNumber))
 	cmd.Dir = root
 	out, err := cmd.Output()
@@ -132,7 +155,7 @@ func FetchReviewStatus(ctx context.Context, prNumber int) (ReviewResult, error) 
 		}
 	}
 
-	if latest == nil {
+	if latest == nil || latest.CommitID != head.HeadRefOid {
 		return ReviewResult{Status: ReviewPending}, nil
 	}
 	switch latest.State {
