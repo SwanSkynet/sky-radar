@@ -34,7 +34,24 @@ func newRouter(api *flightsAPI) http.Handler {
 	mux.HandleFunc("GET /healthz", healthz)
 	mux.HandleFunc("GET /flights", api.listFlights)
 	mux.HandleFunc("GET /flights/{icao24}", api.getFlight)
-	return mux
+	return withCORS(mux)
+}
+
+// withCORS allows any origin to read this anonymous, read-only public API
+// (see docs/prd/phase-1-foundation.md: "anonymous-only, generous limits,
+// since there's no abuse surface yet"), so the frontend dev server
+// (different origin/port) can poll it directly without a proxy.
+func withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		if r.Method == http.MethodOptions {
+			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func main() {
