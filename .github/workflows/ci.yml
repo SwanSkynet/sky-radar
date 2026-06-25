@@ -43,3 +43,113 @@ jobs:
       - run: npm run format:check
       - run: npm run lint
       - run: npm run build
+
+  # Builds every Phase 1 production image on every PR (no push) so a
+  # broken Dockerfile/build-arg surfaces before merge, per
+  # docs/tech-stack/hosting-and-deployment.md's intended CI/CD pipeline.
+  container-build:
+    needs: backend
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service:
+          - adapter-opensky
+          - adapter-adsblol
+          - adapter-airplaneslive
+          - normalizer
+          - apigateway
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4
+      - uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7
+        with:
+          context: .
+          file: deploy/go.Dockerfile
+          build-args: SERVICE=${{ matrix.service }}
+          push: false
+
+  # On merge to main, push the images this milestone's deploy job promotes
+  # to production. Container registry is GHCR (free for public repos).
+  container-push:
+    needs: [backend, frontend, container-build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        service:
+          - adapter-opensky
+          - adapter-adsblol
+          - adapter-airplaneslive
+          - normalizer
+          - apigateway
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4
+      - uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7
+        with:
+          context: .
+          file: deploy/go.Dockerfile
+          build-args: SERVICE=${{ matrix.service }}
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/sky-radar-${{ matrix.service }}:latest
+            ghcr.io/${{ github.repository_owner }}/sky-radar-${{ matrix.service }}:${{ github.sha }}
+
+  # Manual approval gate (GitHub Environment protection rule on
+  # "production") per docs/tech-stack/hosting-and-deployment.md. Requires
+  # the FLY_API_TOKEN secret and the Fly apps/volume to already exist —
+  # see docs/tech-stack/hosting-and-deployment.md for the one-time setup.
+  deploy-production:
+    needs: container-push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    strategy:
+      matrix:
+        service:
+          - redis
+          - adapter-opensky
+          - adapter-adsblol
+          - adapter-airplaneslive
+          - normalizer
+          - apigateway
+          - web
+      max-parallel: 1
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1
+      # redis is deployed first (matrix order + max-parallel: 1) since
+      # normalizer/apigateway depend on it being up. It pulls redis:7-alpine
+      # directly per its own fly.toml, so no --image override is needed.
+      # web has no GHCR image (it's not in container-push's matrix — see
+      # that job's comment), so it builds via Fly's remote builder using
+      # the Dockerfile/build-args in its own fly.toml. Every other service
+      # promotes the exact image container-push already built and tested.
+      - run: |
+          if [ "${{ matrix.service }}" = "web" ]; then
+            flyctl deploy --config deploy/fly/web.toml --remote-only
+          elif [ "${{ matrix.service }}" = "redis" ]; then
+            flyctl deploy --config deploy/fly/redis.toml
+          else
+            flyctl deploy --config "deploy/fly/${{ matrix.service }}.toml" \
+              --image "ghcr.io/${{ github.repository_owner }}/sky-radar-${{ matrix.service }}:${{ github.sha }}"
+          fi
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

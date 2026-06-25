@@ -1,0 +1,36 @@
+# Fly.io app config for cmd/apigateway. Deploy from the repo root so the
+# build context matches deploy/go.Dockerfile's COPY paths:
+#   fly deploy --config deploy/fly/apigateway.toml --dockerfile deploy/go.Dockerfile .
+# See docs/tech-stack/hosting-and-deployment.md for the full topology.
+app = "sky-radar-apigateway"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "deploy/go.Dockerfile"
+
+  [build.args]
+    SERVICE = "apigateway"
+
+[env]
+  PORT = "8080"
+  REDIS_ADDR = "sky-radar-redis.internal:6379"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/healthz"
+    protocol = "http"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

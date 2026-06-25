@@ -1,0 +1,28 @@
+# Fly.io app config for cmd/adapter-adsblol. Internal-only worker, polls
+# adsb.lol and writes raw state to Redis; no public http_service. Deploy
+# from the repo root: fly deploy --config deploy/fly/adapter-adsblol.toml .
+app = "sky-radar-adapter-adsblol"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "deploy/go.Dockerfile"
+
+  [build.args]
+    SERVICE = "adapter-adsblol"
+
+[env]
+  PORT = "8082"
+  REDIS_ADDR = "sky-radar-redis.internal:6379"
+
+[checks]
+  [checks.healthz]
+    port = 8082
+    type = "http"
+    path = "/healthz"
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "10s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

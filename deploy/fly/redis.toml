@@ -1,0 +1,32 @@
+# Fly.io app config for the Phase 1 hot-state Redis instance. Self-hosted
+# as a container with a persistent volume per
+# docs/tech-stack/hosting-and-deployment.md ("Redis and NATS ... can run
+# as containers alongside the application services"), since hot state can
+# be rebuilt from the live feed and doesn't need a managed add-on.
+#
+# The volume must exist before the first deploy:
+#   fly volumes create sky_radar_redis_data --region sjc --size 1 -a sky-radar-redis
+app = "sky-radar-redis"
+primary_region = "sjc"
+
+[build]
+  image = "redis:7-alpine"
+
+[processes]
+  app = "redis-server --appendonly yes --dir /data"
+
+[[mounts]]
+  source = "sky_radar_redis_data"
+  destination = "/data"
+
+[checks]
+  [checks.ping]
+    port = 6379
+    type = "tcp"
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "10s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
