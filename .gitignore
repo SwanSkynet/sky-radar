@@ -13,3 +13,6 @@ web/dist/
 
 # Claude Code local settings (personal, not shared)
 .claude/
+
+# Local secrets for the automation pipeline (never commit)
+automation/.env.local
