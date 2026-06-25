@@ -1,0 +1,28 @@
+# Fly.io app config for cmd/normalizer. Internal-only worker: no public
+# http_service, just a /healthz check on its private port. Deploy from the
+# repo root: fly deploy --config deploy/fly/normalizer.toml .
+app = "sky-radar-normalizer"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "deploy/go.Dockerfile"
+
+  [build.args]
+    SERVICE = "normalizer"
+
+[env]
+  PORT = "8084"
+  REDIS_ADDR = "sky-radar-redis.internal:6379"
+
+[checks]
+  [checks.healthz]
+    port = 8084
+    type = "http"
+    path = "/healthz"
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "10s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

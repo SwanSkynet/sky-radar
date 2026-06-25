@@ -1,0 +1,33 @@
+# Fly.io app config for cmd/adapter-opensky. Internal-only worker, polls
+# OpenSky and writes raw state to Redis; no public http_service. Deploy
+# from the repo root: fly deploy --config deploy/fly/adapter-opensky.toml .
+#
+# OPENSKY_CLIENT_ID / OPENSKY_CLIENT_SECRET are optional OAuth2 credentials
+# (the provider's anonymous tier works without them, at a lower rate limit
+# — see docs/api-docs/opensky-api-docs.md). Set them with:
+#   fly secrets set OPENSKY_CLIENT_ID=... OPENSKY_CLIENT_SECRET=... -a sky-radar-adapter-opensky
+app = "sky-radar-adapter-opensky"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "deploy/go.Dockerfile"
+
+  [build.args]
+    SERVICE = "adapter-opensky"
+
+[env]
+  PORT = "8081"
+  REDIS_ADDR = "sky-radar-redis.internal:6379"
+
+[checks]
+  [checks.healthz]
+    port = 8081
+    type = "http"
+    path = "/healthz"
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "10s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
