@@ -70,11 +70,29 @@ func PipelineWorkflow(ctx workflow.Context) error {
 				approved = true
 			case activities.ReviewChangesRequested:
 				logger.Info("Addressing review comments", "pr", prNumber)
-				if err := workflow.ExecuteActivity(ctx, activities.AddressReviewFeedback, *task, result.Feedback).Get(ctx, nil); err != nil {
+				if err := workflow.ExecuteActivity(ctx, activities.AddressFeedback, *task, "CodeRabbit's review", result.Feedback).Get(ctx, nil); err != nil {
 					return err
 				}
 			default:
 				logger.Info("Review still pending, waiting for next signal", "pr", prNumber)
+			}
+		}
+
+		// CodeRabbit approving isn't enough on its own — PR #8 was merged once
+		// with a failing frontend CI check because nothing checked CI status
+		// before calling MergePR. Poll until every check is green, fixing and
+		// re-checking in between if anything fails.
+		for {
+			var checks activities.ChecksResult
+			if err := workflow.ExecuteActivity(ctx, activities.WaitForChecks, prNumber).Get(ctx, &checks); err != nil {
+				return err
+			}
+			if checks.AllPassed {
+				break
+			}
+			logger.Info("CI checks failed, addressing", "pr", prNumber)
+			if err := workflow.ExecuteActivity(ctx, activities.AddressFeedback, *task, "A failing CI check", checks.Failures).Get(ctx, nil); err != nil {
+				return err
 			}
 		}
 

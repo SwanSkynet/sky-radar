@@ -62,9 +62,11 @@ func RunClaude(ctx context.Context, task Task) error {
 	return commitAndPush(ctx, root, task.Branch, "Automated: "+task.ID)
 }
 
-// AddressReviewFeedback re-invokes Claude on the task's existing branch with
-// the reviewer's feedback appended, then commits + pushes the fix.
-func AddressReviewFeedback(ctx context.Context, task Task, feedback string) error {
+// AddressFeedback re-invokes Claude on the task's existing branch with
+// feedback appended, then commits + pushes the fix. source describes where
+// the feedback came from (e.g. "CodeRabbit's review" or "a failing CI
+// check") so the prompt makes sense regardless of which gate triggered it.
+func AddressFeedback(ctx context.Context, task Task, source, feedback string) error {
 	root, err := RepoRoot()
 	if err != nil {
 		return err
@@ -75,14 +77,14 @@ func AddressReviewFeedback(ctx context.Context, task Task, feedback string) erro
 
 	prompt := scopeNote + fmt.Sprintf(
 		"You previously implemented the following task on this branch:\n\n%s\n\n---\n\n"+
-			"CodeRabbit posted this review on the open pull request (#%d). Address every "+
-			"actionable comment; for nitpicks, only fix them if they're trivial:\n\n%s",
-		task.Prompt, task.PR, feedback,
+			"%s on the open pull request (#%d) needs to be addressed. Fix every actionable "+
+			"item; for nitpicks, only fix them if they're trivial:\n\n%s",
+		task.Prompt, source, task.PR, feedback,
 	)
 	if err := invokeClaude(ctx, root, prompt); err != nil {
 		return err
 	}
-	return commitAndPush(ctx, root, task.Branch, fmt.Sprintf("Automated: address review feedback on PR #%d", task.PR))
+	return commitAndPush(ctx, root, task.Branch, fmt.Sprintf("Automated: address feedback on PR #%d", task.PR))
 }
 
 // startBranch resumes an existing branch (e.g. an activity retry after a

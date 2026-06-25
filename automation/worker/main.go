@@ -27,9 +27,10 @@ func main() {
 	w.RegisterActivity(activities.GetNextTask)
 	w.RegisterActivity(activities.MarkComplete)
 	w.RegisterActivity(activities.RunClaude)
-	w.RegisterActivity(activities.AddressReviewFeedback)
+	w.RegisterActivity(activities.AddressFeedback)
 	w.RegisterActivity(activities.CreatePR)
 	w.RegisterActivity(activities.FetchReviewStatus)
+	w.RegisterActivity(activities.WaitForChecks)
 	w.RegisterActivity(activities.MergePR)
 
 	log.Println("Worker started. Listening on task queue:", TaskQueue)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -140,6 +141,86 @@ func FetchReviewStatus(ctx context.Context, prNumber int) (ReviewResult, error) 
 	default: // CHANGES_REQUESTED
 		return ReviewResult{Status: ReviewChangesRequested, Feedback: latest.Body}, nil
 	}
+}
+
+type ChecksResult struct {
+	AllPassed bool
+	Failures  string // failing check names/links plus a tail of their logs, for feeding back to Claude
+}
+
+var runIDPattern = regexp.MustCompile(`/actions/runs/(\d+)`)
+
+// WaitForChecks polls the PR's CI checks (gh pr checks) until none are left
+// pending, then reports whether everything passed. CodeRabbit's own approval
+// isn't sufficient to merge: PR #8 was merged with a failing frontend build
+// because nothing checked actual CI status before calling MergePR.
+func WaitForChecks(ctx context.Context, prNumber int) (ChecksResult, error) {
+	root, err := RepoRoot()
+	if err != nil {
+		return ChecksResult{}, err
+	}
+
+	type ghCheck struct {
+		Name   string `json:"name"`
+		Bucket string `json:"bucket"`
+		Link   string `json:"link"`
+	}
+
+	var checks []ghCheck
+	for {
+		cmd := exec.CommandContext(ctx, "gh", "pr", "checks", fmt.Sprintf("%d", prNumber),
+			"--json", "name,bucket,link")
+		cmd.Dir = root
+		out, err := cmd.Output() // a non-zero exit just means a check failed/is pending; stdout still has the JSON
+		if len(out) == 0 {
+			return ChecksResult{}, fmt.Errorf("gh pr checks: %w", err)
+		}
+		if err := json.Unmarshal(out, &checks); err != nil {
+			return ChecksResult{}, fmt.Errorf("parsing pr checks: %w", err)
+		}
+
+		pending := false
+		for _, c := range checks {
+			if c.Bucket == "pending" {
+				pending = true
+				break
+			}
+		}
+		if !pending {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ChecksResult{}, ctx.Err()
+		case <-time.After(10 * time.Second):
+		}
+	}
+
+	var sb strings.Builder
+	for _, c := range checks {
+		if c.Bucket != "fail" && c.Bucket != "cancel" {
+			continue
+		}
+		sb.WriteString(fmt.Sprintf("- %s (%s): %s\n", c.Name, c.Bucket, c.Link))
+		if m := runIDPattern.FindStringSubmatch(c.Link); len(m) == 2 {
+			logCmd := exec.CommandContext(ctx, "gh", "run", "view", m[1], "--log-failed")
+			logCmd.Dir = root
+			logOut, _ := logCmd.Output()
+			sb.WriteString(fmt.Sprintf("\n--- %s failure log (tail) ---\n%s\n\n", c.Name, tailString(string(logOut), 4000)))
+		}
+	}
+
+	if sb.Len() == 0 {
+		return ChecksResult{AllPassed: true}, nil
+	}
+	return ChecksResult{AllPassed: false, Failures: "The following CI checks failed:\n" + sb.String()}, nil
+}
+
+func tailString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[len(s)-maxLen:]
 }
 
 // MergePR merges the PR once it's approved. Squash matches this repo's
