@@ -109,8 +109,11 @@ services:
   web:
     image: node:22-alpine
     working_dir: /app
+    # No restart policy: this dev-only service re-runs `npm install` on
+    # every boot (no built image), so auto-restarting it would make
+    # recovery from a crash depend on npm registry availability instead
+    # of just relaunching a built artifact.
     command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
-    restart: unless-stopped
     ports:
       - "5173:5173"
     volumes:

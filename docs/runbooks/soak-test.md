@@ -22,21 +22,43 @@ deployment.
 ## What the script checks
 
 [`scripts/soak-test.sh`](../../scripts/soak-test.sh) polls every Phase 1
-service's `/healthz` plus the public `GET /flights` route on a fixed
+service's health endpoint plus the public `GET /flights` route on a fixed
 interval (default: every 60s, for 24h), and logs every check. It tracks,
 per target: total checks, failures, uptime %, and the longest unbroken
-outage. As of this runbook, every backend service's `/healthz` actually
-pings Redis rather than unconditionally returning `200` — see
-[P1-FR7](../prd/phase-1-foundation.md#functional-requirements) — so a real
-Redis outage during the soak window will show up as `DOWN` lines, not be
-silently masked.
+outage.
+
+Each service exposes two endpoints (see `internal/health`):
+
+- `/healthz` — pure process liveness, always `200` once the process is
+  serving HTTP. This is what Fly's health check (and the
+  `apigateway-healthz` line in the script) uses, so a transient Redis
+  blip doesn't restart-loop an otherwise-healthy process.
+- `/readyz` — pings Redis and returns `503` if it's unreachable. The
+  script's `normalizer-readyz`/`adapter-*-readyz` lines hit this, so a
+  real Redis outage during the soak window still shows up as `DOWN`
+  lines per [P1-FR7](../prd/phase-1-foundation.md#functional-requirements)
+  instead of being silently masked.
+
+The `apigateway-flights` line also fails (not just `DOWN` on non-200) if
+`GET /flights` returns `200` with an empty aircraft set, or with the same
+aircraft set on every non-empty check across the run — either case means
+data isn't actually flowing end-to-end even though the process is up.
 
 The script cannot observe whether a human manually restarted a container or
 Fly machine during the window — that half of the "no manual restarts"
 criterion is on the operator's honor system. Don't restart anything by hand
-during the run; if a service needs to recover, let `restart: unless-stopped`
-(local) or Fly's own health-check-triggered restart (production) handle it,
-and let the script's `DOWN`/`RECOVERED` log lines capture that it happened.
+during the run.
+
+Locally, a `DOWN` on `/readyz` from a transient Redis blip does **not**
+require a restart: the handler pings Redis fresh on every request, so it
+reports `200` again on its own as soon as Redis recovers, and the script's
+`RECOVERED` line captures that. `restart: unless-stopped` only comes into
+play if the process itself exits — which only happens here if the initial
+Redis connectivity check at startup fails (see each service's `main()`),
+not from a steady-state outage after the process is already running. In
+production, Fly's own health-check-triggered restart is the equivalent
+mechanism, but only acts on `/healthz` (liveness), so it likewise won't
+fire on a Redis blip alone.
 
 ## Local run (docker-compose)
 
@@ -132,9 +154,10 @@ The soak test passes when, over the full 24h+ window:
   any restart is explained by an automatic recovery from a real transient
   failure, not a human intervening.
 - The P1-FR2 grep above shows no sustained `429` runs for any adapter.
-- `GET /flights` returns a non-empty, changing set of aircraft across the
-  window (spot-check a few timestamps in the log/manually), confirming data
-  is actually flowing end-to-end and not just that the process is up.
+- The `apigateway-flights` line in the summary shows `ever_non_empty=true`
+  and `ever_changed=true` — the script already fails this on its own if
+  `GET /flights` returned an empty or unchanging aircraft set, confirming
+  data is actually flowing end-to-end and not just that the process is up.
 
 If any of the above fails, fix the root cause and restart the 24h clock —
 per the [implementation plan](../implementation-plan.md#phase-1--foundation),

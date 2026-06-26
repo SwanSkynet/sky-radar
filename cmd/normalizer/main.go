@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/SwanSkynet/sky-radar/internal/health"
 	"github.com/SwanSkynet/sky-radar/internal/redisutil"
 	"github.com/redis/go-redis/v9"
 )
@@ -33,25 +34,6 @@ const (
 	// per docs/tech-stack/data-and-messaging.md.
 	defaultFlightStateTTL = 90 * time.Second
 )
-
-// healthz reports unhealthy (503) if Redis is unreachable, rather than
-// always returning 200, so a Fly health check (or the soak-test monitor in
-// scripts/soak-test.sh) actually detects the Redis-dependency outage this
-// service cannot run without, instead of masking it during unattended
-// operation (see docs/prd/phase-1-foundation.md's 24-hour soak requirement).
-func healthz(redisClient *redisutil.Client) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-		defer cancel()
-		if err := redisClient.Ping(ctx); err != nil {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte("unhealthy: redis unreachable"))
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	}
-}
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", serviceName)
@@ -87,7 +69,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	mux.HandleFunc("GET /healthz", healthz(redisClient))
+	mux.HandleFunc("GET /healthz", health.Live)
+	mux.HandleFunc("GET /readyz", health.Ready(redisClient))
 
 	mergeInterval := envDuration("MERGE_INTERVAL_SECONDS", defaultMergeInterval)
 	flightStateTTL := envDuration("FLIGHT_STATE_TTL_SECONDS", defaultFlightStateTTL)

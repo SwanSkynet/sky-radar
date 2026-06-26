@@ -16,3 +16,6 @@ web/dist/
 
 # Local secrets for the automation pipeline (never commit)
 automation/.env.local
+
+# scripts/soak-test.sh's default log output
+soak-test-*.log
