@@ -1,0 +1,10 @@
+skyradar.swanathiyarath.com {
+    # Proxy API and WebSocket requests to the API Gateway, stripping the /api prefix
+    route /api/* {
+        uri strip_prefix /api
+        reverse_proxy apigateway:8080
+    }
+
+    # Proxy everything else to the static web frontend
+    reverse_proxy web:8080
+}

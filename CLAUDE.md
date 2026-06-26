@@ -37,7 +37,7 @@ Guiding rule: `/cmd` binaries are independently deployable processes. Shared cod
 Treat these decisions as fixed unless I explicitly request a change:
 
 - Backend language: Go
-- Hosting/orchestration: lightweight containers on a PaaS, no Kubernetes
+- Hosting/orchestration: DigitalOcean Droplet with Docker Compose & Caddy, no Kubernetes
 - Stream bus: NATS JetStream
 - Hot state/cache: Redis
 - Durable store: PostgreSQL
@@ -48,7 +48,7 @@ Treat these decisions as fixed unless I explicitly request a change:
 - API protocols: REST + GraphQL + WebSocket
 - Observability: OpenTelemetry + Grafana Cloud free tier
 - CI/CD: GitHub Actions + GitHub Container Registry
-- Infra as code: PaaS-native config plus limited Terraform where needed
+- Infra as code: Docker Compose configs, Caddy configurations, and SSH deploy scripts
 
 ## How To Run
 
@@ -57,6 +57,8 @@ Use these commands when the relevant tooling exists in the repo:
 - Lint: `golangci-lint run ./...`
 - Go tests: `go test ./...`
 - Local stack: `docker compose up --build`
+- Prod stack local run: `docker compose -f deploy/docker-compose.prod.yml up --build`
+
 
 For frontend work, use the scripts defined in `web/package.json` once the web app exists. Prefer the repo's documented commands over inventing new ones.
 
