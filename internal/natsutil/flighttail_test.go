@@ -226,6 +226,118 @@ func TestResumeReaderRejectsSequenceOlderThanRetention(t *testing.T) {
 	}
 }
 
+func TestReplayReaderDeliversOnlyMessagesFromStartTimeOnward(t *testing.T) {
+	url := startTestServer(t)
+	nc, err := Connect(url)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	t.Cleanup(nc.Close)
+	js, err := JetStream(nc)
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := EnsureFlightsUpdatesStream(ctx, js); err != nil {
+		t.Fatalf("EnsureFlightsUpdatesStream: %v", err)
+	}
+	pub := NewFlightStatePublisher(js)
+
+	if err := pub.PublishFlightState(ctx, sampleState("before")); err != nil {
+		t.Fatalf("PublishFlightState: %v", err)
+	}
+
+	// JetStream timestamps messages at publish time with second-ish
+	// granularity expectations in practice; sleep comfortably past any
+	// clock-resolution edge case so "from" unambiguously falls between the
+	// two publishes.
+	time.Sleep(50 * time.Millisecond)
+	from := time.Now()
+	time.Sleep(50 * time.Millisecond)
+
+	if err := pub.PublishFlightState(ctx, sampleState("after")); err != nil {
+		t.Fatalf("PublishFlightState: %v", err)
+	}
+
+	reader, err := NewFlightStateReplayReader(ctx, js, from)
+	if err != nil {
+		t.Fatalf("NewFlightStateReplayReader: %v", err)
+	}
+
+	pending, err := reader.PendingCount(ctx)
+	if err != nil {
+		t.Fatalf("PendingCount: %v", err)
+	}
+	if pending != 1 {
+		t.Fatalf("PendingCount = %d, want 1", pending)
+	}
+
+	backlog, err := reader.FetchBacklog(int(pending), 2*time.Second, nil)
+	if err != nil {
+		t.Fatalf("FetchBacklog: %v", err)
+	}
+	if len(backlog) != 1 {
+		t.Fatalf("len(backlog) = %d, want 1: %+v", len(backlog), backlog)
+	}
+	if backlog[0].State.ICAO24 != "after" {
+		t.Errorf("ICAO24 = %q, want after", backlog[0].State.ICAO24)
+	}
+	if backlog[0].Timestamp.Before(from) {
+		t.Errorf("Timestamp = %v, want at or after %v", backlog[0].Timestamp, from)
+	}
+}
+
+func TestReplayReaderStartsAtOldestRetainedWhenFromPredatesStream(t *testing.T) {
+	url := startTestServer(t)
+	nc, err := Connect(url)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	t.Cleanup(nc.Close)
+	js, err := JetStream(nc)
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := EnsureFlightsUpdatesStream(ctx, js); err != nil {
+		t.Fatalf("EnsureFlightsUpdatesStream: %v", err)
+	}
+	pub := NewFlightStatePublisher(js)
+
+	for _, icao24 := range []string{"aaaaaa", "bbbbbb", "cccccc"} {
+		if err := pub.PublishFlightState(ctx, sampleState(icao24)); err != nil {
+			t.Fatalf("PublishFlightState: %v", err)
+		}
+	}
+
+	reader, err := NewFlightStateReplayReader(ctx, js, time.Unix(0, 0))
+	if err != nil {
+		t.Fatalf("NewFlightStateReplayReader: %v", err)
+	}
+
+	pending, err := reader.PendingCount(ctx)
+	if err != nil {
+		t.Fatalf("PendingCount: %v", err)
+	}
+	if pending != 3 {
+		t.Fatalf("PendingCount = %d, want 3", pending)
+	}
+
+	backlog, err := reader.FetchBacklog(int(pending), 2*time.Second, nil)
+	if err != nil {
+		t.Fatalf("FetchBacklog: %v", err)
+	}
+	wantOrder := []string{"aaaaaa", "bbbbbb", "cccccc"}
+	if len(backlog) != len(wantOrder) {
+		t.Fatalf("len(backlog) = %d, want %d: %+v", len(backlog), len(wantOrder), backlog)
+	}
+	for i, msg := range backlog {
+		if msg.State.ICAO24 != wantOrder[i] {
+			t.Errorf("backlog[%d].ICAO24 = %q, want %q", i, msg.State.ICAO24, wantOrder[i])
+		}
+	}
+}
+
 func TestResumeReaderRejectsSequenceOlderThanRetentionWhenStreamFullyDrained(t *testing.T) {
 	url := startTestServer(t)
 	nc, err := Connect(url)

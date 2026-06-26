@@ -13,6 +13,7 @@ import (
 
 	"github.com/SwanSkynet/sky-radar/internal/health"
 	"github.com/SwanSkynet/sky-radar/internal/natsutil"
+	"github.com/SwanSkynet/sky-radar/internal/pgstore"
 	"github.com/SwanSkynet/sky-radar/internal/redisutil"
 	"github.com/redis/go-redis/v9"
 )
@@ -21,15 +22,17 @@ const (
 	serviceName = "apigateway"
 	defaultPort = "8080"
 
-	defaultRedisAddr = "localhost:6379"
-	defaultNATSURL   = "nats://localhost:4222"
+	defaultRedisAddr   = "localhost:6379"
+	defaultNATSURL     = "nats://localhost:4222"
+	defaultDatabaseURL = "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"
 )
 
 // newRouter wires the public REST and WebSocket routes onto a fresh mux.
 // Pulled out of main so tests can exercise the same routing this binary
-// actually serves. wsGW may be nil in tests that don't exercise the
-// WebSocket path, in which case GET /ws is simply not registered.
-func newRouter(api *flightsAPI, wsGW *wsGateway) http.Handler {
+// actually serves. wsGW and replay may be nil in tests that don't exercise
+// those paths, in which case GET /ws and GET /replay are simply not
+// registered.
+func newRouter(api *flightsAPI, wsGW *wsGateway, replay *replayAPI) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", health.Live)
 	mux.HandleFunc("GET /readyz", health.Ready(api.redis))
@@ -37,6 +40,9 @@ func newRouter(api *flightsAPI, wsGW *wsGateway) http.Handler {
 	mux.HandleFunc("GET /flights/{icao24}", api.getFlight)
 	if wsGW != nil {
 		mux.HandleFunc("GET /ws", wsGW.handleWS)
+	}
+	if replay != nil {
+		mux.HandleFunc("GET /replay", replay.getReplay)
 	}
 	return withCORS(mux)
 }
@@ -83,6 +89,18 @@ func main() {
 
 	api := &flightsAPI{redis: redisClient, logger: logger}
 
+	pg, err := pgstore.Connect(ctx, envString("DATABASE_URL", defaultDatabaseURL))
+	if err != nil {
+		logger.Error("postgres connect failed", "err", err)
+		os.Exit(1)
+	}
+	defer pg.Close()
+
+	if err := pg.Migrate(ctx); err != nil {
+		logger.Error("postgres migrate failed", "err", err)
+		os.Exit(1)
+	}
+
 	nc, err := natsutil.Connect(envString("NATS_URL", defaultNATSURL))
 	if err != nil {
 		logger.Error("nats connect failed", "err", err)
@@ -102,6 +120,7 @@ func main() {
 
 	hub := newWSHub()
 	wsGW := newWSGateway(hub, js, logger)
+	replay := &replayAPI{js: js, pg: pg, logger: logger}
 
 	liveTail, err := natsutil.NewFlightStateLiveTailReader(ctx, js)
 	if err != nil {
@@ -119,7 +138,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:    ":" + port,
-		Handler: newRouter(api, wsGW),
+		Handler: newRouter(api, wsGW, replay),
 		// ReadTimeout/WriteTimeout are deliberately unset: net/http sets
 		// them as fixed deadlines on the underlying connection before the
 		// handler runs, and Hijack (which GET /ws relies on for the

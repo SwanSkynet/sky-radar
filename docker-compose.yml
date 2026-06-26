@@ -149,8 +149,14 @@ services:
     environment:
       - PORT=8080
       - REDIS_ADDR=redis:6379
+      - NATS_URL=nats://nats:4222
+      - DATABASE_URL=postgres://postgres:postgres@postgres:5432/postgres?sslmode=disable
     depends_on:
       redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
 
   web:

@@ -19,10 +19,13 @@ const (
 	// SubjectFlightsUpdates.
 	StreamFlightsUpdates = "FLIGHTS_UPDATES"
 
-	// flightsUpdatesMaxAge matches the "full replay window (default 30
+	// FlightsUpdatesMaxAge matches the "full replay window (default 30
 	// minutes full-resolution)" retention documented for flights.updates in
-	// docs/tech-stack/data-and-messaging.md.
-	flightsUpdatesMaxAge = 30 * time.Minute
+	// docs/tech-stack/data-and-messaging.md. Exported so callers building a
+	// replay window (cmd/apigateway's GET /replay) know where the
+	// full-resolution JetStream window ends and the downsampled Postgres
+	// flight_history must take over.
+	FlightsUpdatesMaxAge = 30 * time.Minute
 
 	// SubjectEventsDetected is the subject the event engine publishes
 	// detected Events to; see the subject table in
@@ -67,7 +70,7 @@ func EnsureFlightsUpdatesStream(ctx context.Context, js jetstream.JetStream) (je
 		Name:      StreamFlightsUpdates,
 		Subjects:  []string{SubjectFlightsUpdates},
 		Retention: jetstream.LimitsPolicy,
-		MaxAge:    flightsUpdatesMaxAge,
+		MaxAge:    FlightsUpdatesMaxAge,
 		Storage:   jetstream.FileStorage,
 	})
 	if err != nil {
