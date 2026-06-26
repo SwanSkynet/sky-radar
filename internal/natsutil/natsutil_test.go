@@ -258,3 +258,135 @@ func TestPublishEventDeliversToSubscriber(t *testing.T) {
 		t.Errorf("got %+v, want %+v", got, want)
 	}
 }
+
+func TestEventSubscriberDeliversEvent(t *testing.T) {
+	ctx, nc := testJetStream(t)
+
+	js, err := JetStream(nc)
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+	if _, err := EnsureEventsDetectedStream(ctx, js); err != nil {
+		t.Fatalf("EnsureEventsDetectedStream: %v", err)
+	}
+
+	want := flightmodel.Event{
+		ID:            flightmodel.NewEventID(),
+		Type:          flightmodel.EventTypeGeofenceEnter,
+		ICAO24:        "a1b2c3",
+		Severity:      flightmodel.EventSeverityInfo,
+		OccurredAtUTC: time.Now().UTC(),
+		Detail:        json.RawMessage(`{"zone_id":"zone-1"}`),
+	}
+
+	publisher := NewEventPublisher(js)
+	if err := publisher.PublishEvent(ctx, want); err != nil {
+		t.Fatalf("PublishEvent: %v", err)
+	}
+
+	sub, err := NewEventSubscriber(ctx, js, "pgstorewriter-events")
+	if err != nil {
+		t.Fatalf("NewEventSubscriber: %v", err)
+	}
+
+	var mu sync.Mutex
+	var got *flightmodel.Event
+	done := make(chan struct{})
+
+	runCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	go func() {
+		_ = sub.Run(runCtx, nil, func(event flightmodel.Event) {
+			mu.Lock()
+			if got == nil {
+				got = &event
+				close(done)
+			}
+			mu.Unlock()
+		})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(4 * time.Second):
+		t.Fatal("timed out waiting for event")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got.ID != want.ID || got.Type != want.Type || got.ICAO24 != want.ICAO24 {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestEventSubscriberSkipsMalformedMessages(t *testing.T) {
+	ctx, nc := testJetStream(t)
+
+	js, err := JetStream(nc)
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+	if _, err := EnsureEventsDetectedStream(ctx, js); err != nil {
+		t.Fatalf("EnsureEventsDetectedStream: %v", err)
+	}
+
+	if _, err := js.Publish(ctx, SubjectEventsDetected, []byte("not json")); err != nil {
+		t.Fatalf("publish malformed message: %v", err)
+	}
+
+	want := flightmodel.Event{
+		ID:            flightmodel.NewEventID(),
+		Type:          flightmodel.EventTypeWatchlistMatch,
+		ICAO24:        "d4e5f6",
+		Severity:      flightmodel.EventSeverityInfo,
+		OccurredAtUTC: time.Now().UTC(),
+	}
+	publisher := NewEventPublisher(js)
+	if err := publisher.PublishEvent(ctx, want); err != nil {
+		t.Fatalf("PublishEvent: %v", err)
+	}
+
+	sub, err := NewEventSubscriber(ctx, js, "skip-malformed-events")
+	if err != nil {
+		t.Fatalf("NewEventSubscriber: %v", err)
+	}
+
+	var mu sync.Mutex
+	var decodeErrs int
+	var got *flightmodel.Event
+	done := make(chan struct{})
+
+	runCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	go func() {
+		_ = sub.Run(runCtx, func(error) {
+			mu.Lock()
+			decodeErrs++
+			mu.Unlock()
+		}, func(event flightmodel.Event) {
+			mu.Lock()
+			if got == nil {
+				got = &event
+				close(done)
+			}
+			mu.Unlock()
+		})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(4 * time.Second):
+		t.Fatal("timed out waiting for valid event after malformed one")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if decodeErrs != 1 {
+		t.Errorf("decodeErrs = %d, want 1", decodeErrs)
+	}
+	if got.ID != want.ID {
+		t.Errorf("ID = %q, want %q", got.ID, want.ID)
+	}
+}

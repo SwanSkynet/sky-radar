@@ -10,9 +10,19 @@ services:
       timeout: 2s
       retries: 15
 
-  # Postgres is intentionally still absent: per docs/implementation-plan.md
-  # it lands later in Phase 2 alongside the durable-store writer. NATS
-  # JetStream is introduced here as the first Phase 2 milestone.
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_PASSWORD=postgres
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
   nats:
     image: nats:2-alpine
     command: ["-js", "-m", "8222"]
@@ -106,6 +116,25 @@ services:
       - NATS_URL=nats://nats:4222
     depends_on:
       nats:
+        condition: service_healthy
+
+  pgstorewriter:
+    build:
+      context: .
+      dockerfile: deploy/go.Dockerfile
+      args:
+        SERVICE: pgstorewriter
+    restart: unless-stopped
+    ports:
+      - "8086:8086"
+    environment:
+      - PORT=8086
+      - NATS_URL=nats://nats:4222
+      - DATABASE_URL=postgres://postgres:postgres@postgres:5432/postgres?sslmode=disable
+    depends_on:
+      nats:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
 
   apigateway:
