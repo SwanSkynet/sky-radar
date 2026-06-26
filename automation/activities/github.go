@@ -106,23 +106,28 @@ type ghReview struct {
 // the same already-fixed feedback through AddressFeedback a second time. So
 // a review only counts if it was submitted against the PR's *current* head
 // commit; anything reviewing an older commit is stale and treated as pending.
-func FetchReviewStatus(ctx context.Context, prNumber int) (ReviewResult, error) {
+//
+// The head SHA comes from `git ls-remote`, not `gh pr view --json headRefOid`:
+// the latter is backed by GitHub's PR-metadata layer, which lags the raw git
+// ref by a couple of seconds right after a push - long enough that the very
+// next FetchReviewStatus call (often seconds after AddressFeedback's own
+// push) can read a stale head and wrongly treat the just-superseded review as
+// current. `git ls-remote` reads the same ref store `git push` writes to.
+func FetchReviewStatus(ctx context.Context, prNumber int, branch string) (ReviewResult, error) {
 	root, err := RepoRoot()
 	if err != nil {
 		return ReviewResult{}, err
 	}
 
-	headCmd := exec.CommandContext(ctx, "gh", "pr", "view", fmt.Sprintf("%d", prNumber), "--json", "headRefOid")
+	headCmd := exec.CommandContext(ctx, "git", "ls-remote", "origin", "refs/heads/"+branch)
 	headCmd.Dir = root
 	headOut, err := headCmd.Output()
 	if err != nil {
-		return ReviewResult{}, fmt.Errorf("gh pr view headRefOid: %w", err)
+		return ReviewResult{}, fmt.Errorf("git ls-remote: %w", err)
 	}
-	var head struct {
-		HeadRefOid string `json:"headRefOid"`
-	}
-	if err := json.Unmarshal(headOut, &head); err != nil {
-		return ReviewResult{}, fmt.Errorf("parsing head ref: %w", err)
+	headSHA := strings.TrimSpace(strings.SplitN(string(headOut), "\t", 2)[0])
+	if headSHA == "" {
+		return ReviewResult{}, fmt.Errorf("git ls-remote returned no SHA for branch %s", branch)
 	}
 
 	cmd := exec.CommandContext(ctx, "gh", "api", "--paginate", fmt.Sprintf("repos/{owner}/{repo}/pulls/%d/reviews", prNumber))
@@ -155,7 +160,55 @@ func FetchReviewStatus(ctx context.Context, prNumber int) (ReviewResult, error) 
 		}
 	}
 
-	if latest == nil || latest.CommitID != head.HeadRefOid {
+	// When a re-review finds nothing actionable, CodeRabbit sometimes posts a
+	// plain issue comment ("No actionable comments were generated...")
+	// instead of submitting a formal review - no pull_request_review event,
+	// no state, no commit_id. Comments can't be tied to a specific commit
+	// the way reviews can, so this is a best-effort heuristic: if that
+	// all-clear comment is the most recent CodeRabbit signal of any kind
+	// (newer than the latest formal review found above), treat it as
+	// approval. It's not airtight, but CodeRabbit posts it immediately after
+	// reviewing a push, so in practice it's never stale by more than seconds.
+	//
+	// CodeRabbit edits a single persistent walkthrough comment in place
+	// rather than posting a new one each time, so CreatedAt reflects the
+	// PR's very first review pass, not this one - UpdatedAt is the field
+	// that actually moves on every edit.
+	commentsCmd := exec.CommandContext(ctx, "gh", "api", "--paginate", fmt.Sprintf("repos/{owner}/{repo}/issues/%d/comments", prNumber))
+	commentsCmd.Dir = root
+	commentsOut, err := commentsCmd.Output()
+	if err != nil {
+		return ReviewResult{}, fmt.Errorf("gh api issue comments: %w", err)
+	}
+	var comments []struct {
+		User struct {
+			Login string `json:"login"`
+		} `json:"user"`
+		Body      string    `json:"body"`
+		UpdatedAt time.Time `json:"updated_at"`
+	}
+	if err := json.Unmarshal(commentsOut, &comments); err != nil {
+		return ReviewResult{}, fmt.Errorf("parsing comments: %w", err)
+	}
+	var latestAllClear *time.Time
+	for i := range comments {
+		c := &comments[i]
+		if c.User.Login != "coderabbitai[bot]" {
+			continue
+		}
+		if !strings.Contains(c.Body, "No actionable comments were generated") {
+			continue
+		}
+		if latestAllClear == nil || c.UpdatedAt.After(*latestAllClear) {
+			t := c.UpdatedAt
+			latestAllClear = &t
+		}
+	}
+	if latestAllClear != nil && (latest == nil || latestAllClear.After(latest.SubmittedAt)) {
+		return ReviewResult{Status: ReviewApproved}, nil
+	}
+
+	if latest == nil || latest.CommitID != headSHA {
 		return ReviewResult{Status: ReviewPending}, nil
 	}
 	switch latest.State {

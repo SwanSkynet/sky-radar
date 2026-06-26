@@ -71,15 +71,32 @@ func PipelineWorkflow(ctx workflow.Context) error {
 
 		approved := false
 		for !approved {
-			// The webhook sends this signal with a nil payload for every
+			// Webhook delivery isn't a complete picture of "CodeRabbit said
+			// something": when a re-review finds nothing actionable, CodeRabbit
+			// sometimes posts a plain issue comment ("No actionable comments
+			// were generated...") instead of submitting a formal review, which
+			// fires no pull_request_review event at all - our only signal
+			// source. Waiting on the signal alone can then block forever on a
+			// verdict that already exists. So this also wakes up on a timer:
+			// webhooks give a fast path in the common case, the timer is the
+			// fallback that guarantees forward progress regardless of which
+			// GitHub event shape actually fired (or didn't).
+			//
+			// The webhook also sends this signal with a nil payload for every
 			// pull_request_review event on the repo, not just this PR, so
 			// it's intentionally unscoped. FetchReviewStatus below always
 			// re-derives the real verdict from prNumber, so a stray signal
 			// from another PR just costs one harmless extra poll.
-			reviewChan.Receive(ctx, nil) // blocks until webhook signals us
+			pollCtx, cancelPoll := workflow.WithCancel(ctx)
+			timer := workflow.NewTimer(pollCtx, 2*time.Minute)
+			sel := workflow.NewSelector(ctx)
+			sel.AddReceive(reviewChan, func(c workflow.ReceiveChannel, more bool) { c.Receive(ctx, nil) })
+			sel.AddFuture(timer, func(f workflow.Future) {})
+			sel.Select(ctx)
+			cancelPoll()
 
 			var result activities.ReviewResult
-			if err := workflow.ExecuteActivity(ctx, activities.FetchReviewStatus, prNumber).Get(ctx, &result); err != nil {
+			if err := workflow.ExecuteActivity(ctx, activities.FetchReviewStatus, prNumber, task.Branch).Get(ctx, &result); err != nil {
 				return err
 			}
 
