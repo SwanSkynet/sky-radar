@@ -93,6 +93,32 @@ func TestObserveClearsFlagSoLaterSilenceRetriggers(t *testing.T) {
 	}
 }
 
+func TestSweepEvictsLongSilentFlaggedAircraft(t *testing.T) {
+	d := NewStaleSignalDetector(60 * time.Second)
+	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+
+	d.Observe(flightmodel.FlightState{ICAO24: "a1b2c3", LastSeenUTC: now.Add(-90 * time.Second)})
+	if events := d.Sweep(now); len(events) != 1 {
+		t.Fatalf("1st Sweep returned %d events, want 1", len(events))
+	}
+	if got := len(d.lastSeen); got != 1 {
+		t.Fatalf("lastSeen size = %d, want 1 before eviction window elapses", got)
+	}
+
+	// Long after eviction window, the entry should be dropped entirely
+	// rather than tracked forever, and no further events should fire for it.
+	wayLater := now.Add(60 * time.Second * (evictAfterMultiple + 1))
+	if events := d.Sweep(wayLater); len(events) != 0 {
+		t.Fatalf("Sweep past eviction window returned %d events, want 0", len(events))
+	}
+	if got := len(d.lastSeen); got != 0 {
+		t.Errorf("lastSeen size = %d, want 0 after eviction", got)
+	}
+	if got := len(d.flagged); got != 0 {
+		t.Errorf("flagged size = %d, want 0 after eviction", got)
+	}
+}
+
 func TestSweepIgnoresUntrackedAircraft(t *testing.T) {
 	d := NewStaleSignalDetector(60 * time.Second)
 	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)

@@ -24,6 +24,12 @@ type StaleSignalDetector struct {
 	flagged  map[string]bool
 }
 
+// evictAfterMultiple bounds detector memory: once an aircraft has been
+// flagged and remains silent for this many multiples of threshold, it is
+// dropped from lastSeen/flagged entirely rather than tracked forever. If it
+// reappears later, Observe just re-adds it.
+const evictAfterMultiple = 6
+
 // NewStaleSignalDetector returns a detector that flags an aircraft as
 // stale once threshold has elapsed since its last observed flights.updates
 // message.
@@ -56,10 +62,14 @@ func (d *StaleSignalDetector) Sweep(now time.Time) []flightmodel.Event {
 
 	var events []flightmodel.Event
 	for icao24, lastSeen := range d.lastSeen {
+		silentFor := now.Sub(lastSeen)
 		if d.flagged[icao24] {
+			if silentFor > d.threshold*evictAfterMultiple {
+				delete(d.lastSeen, icao24)
+				delete(d.flagged, icao24)
+			}
 			continue
 		}
-		silentFor := now.Sub(lastSeen)
 		if silentFor <= d.threshold {
 			continue
 		}

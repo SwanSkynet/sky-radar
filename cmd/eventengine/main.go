@@ -97,7 +97,7 @@ func main() {
 	}
 	eventPublisher := natsutil.NewEventPublisher(js)
 
-	staleDetector := NewStaleSignalDetector(envDuration("STALE_THRESHOLD_SECONDS", defaultStaleThreshold))
+	staleDetector := NewStaleSignalDetector(envDuration(logger, "STALE_THRESHOLD_SECONDS", defaultStaleThreshold))
 
 	go func() {
 		if err := subscriber.Run(ctx, func(err error) {
@@ -116,7 +116,7 @@ func main() {
 		}
 	}()
 
-	staleSweepInterval := envDuration("STALE_SWEEP_INTERVAL_SECONDS", defaultStaleSweepInterval)
+	staleSweepInterval := envDuration(logger, "STALE_SWEEP_INTERVAL_SECONDS", defaultStaleSweepInterval)
 	go runStaleSweepLoop(ctx, logger, staleDetector, eventPublisher, staleSweepInterval)
 
 	go func() {
@@ -183,11 +183,15 @@ func envString(key, fallback string) string {
 	return fallback
 }
 
-func envDuration(key string, fallback time.Duration) time.Duration {
-	if v := os.Getenv(key); v != "" {
-		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
-			return time.Duration(secs) * time.Second
-		}
+func envDuration(logger *slog.Logger, key string, fallback time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
 	}
-	return fallback
+	secs, err := strconv.Atoi(v)
+	if err != nil || secs <= 0 {
+		logger.Warn("invalid duration env var, using default", "key", key, "value", v, "default", fallback)
+		return fallback
+	}
+	return time.Duration(secs) * time.Second
 }
