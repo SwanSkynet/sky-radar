@@ -36,7 +36,7 @@ func Connect(url string, opts ...nats.Option) (*nats.Conn, error) {
 	return nc, nil
 }
 
-// JetStream wraps nc in a jetstream.JetStream context.
+// JetStream wraps nc in a jetstream.JetStream context for stream/consumer management.
 func JetStream(nc *nats.Conn) (jetstream.JetStream, error) {
 	js, err := jetstream.New(nc)
 	if err != nil {
