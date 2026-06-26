@@ -44,6 +44,16 @@ func TestWatchlistObserveTriggersMatchOnFirstSighting(t *testing.T) {
 	}
 }
 
+func TestWatchlistObserveMatchesRegardlessOfICAO24Case(t *testing.T) {
+	d := NewWatchlistDetector([]flightmodel.WatchlistEntry{{ID: "w1", ICAO24: "A1B2C3"}})
+	now := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
+
+	_, matched := d.Observe(flightmodel.FlightState{ICAO24: "a1b2c3", LastSeenUTC: now})
+	if !matched {
+		t.Fatal("Observe with mixed-case watchlist entry vs lowercase FlightState ICAO24 = no match, want a match")
+	}
+}
+
 func TestWatchlistObserveAircraftNotOnWatchlistNeverMatches(t *testing.T) {
 	d := NewWatchlistDetector([]flightmodel.WatchlistEntry{{ID: "w1", ICAO24: "a1b2c3"}})
 	now := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)

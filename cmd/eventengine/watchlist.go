@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,7 +29,7 @@ type WatchlistDetector struct {
 func NewWatchlistDetector(entries []flightmodel.WatchlistEntry) *WatchlistDetector {
 	byICAO24 := make(map[string]flightmodel.WatchlistEntry, len(entries))
 	for _, entry := range entries {
-		byICAO24[entry.ICAO24] = entry
+		byICAO24[normalizeICAO24(entry.ICAO24)] = entry
 	}
 	return &WatchlistDetector{
 		entries:        byICAO24,
@@ -42,7 +43,8 @@ func NewWatchlistDetector(entries []flightmodel.WatchlistEntry) *WatchlistDetect
 // by EvictBefore), and false otherwise — so a watched aircraft generates one
 // notification per continuous period in view rather than one per update.
 func (d *WatchlistDetector) Observe(state flightmodel.FlightState) (flightmodel.Event, bool) {
-	entry, onWatchlist := d.entries[state.ICAO24]
+	icao24 := normalizeICAO24(state.ICAO24)
+	entry, onWatchlist := d.entries[icao24]
 	if !onWatchlist {
 		return flightmodel.Event{}, false
 	}
@@ -50,13 +52,21 @@ func (d *WatchlistDetector) Observe(state flightmodel.FlightState) (flightmodel.
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	d.lastObservedAt[state.ICAO24] = state.LastSeenUTC
-	if d.matched[state.ICAO24] {
+	d.lastObservedAt[icao24] = state.LastSeenUTC
+	if d.matched[icao24] {
 		return flightmodel.Event{}, false
 	}
-	d.matched[state.ICAO24] = true
+	d.matched[icao24] = true
 
 	return newWatchlistEvent(entry, state.LastSeenUTC), true
+}
+
+// normalizeICAO24 lowercases icao24 so lookups are insensitive to the casing
+// watchlist entries or flight states happen to arrive in, while still
+// matching the lowercase-hex convention documented in
+// docs/architecture/data-model.md.
+func normalizeICAO24(icao24 string) string {
+	return strings.ToLower(icao24)
 }
 
 // EvictBefore removes tracked match state for aircraft last observed before
