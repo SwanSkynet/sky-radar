@@ -1,9 +1,10 @@
 // Command eventengine subscribes to flights.updates on NATS JetStream as an
 // independent downstream consumer and evaluates each update against the
 // event-detection rule set, publishing detected Events to events.detected.
-// See docs/tech-stack/backend.md. Only the stale-signal and altitude-delta
-// rules are implemented so far; the remaining rules (speed delta, geofence,
-// watchlist) land in later milestones, see docs/implementation-plan.md.
+// See docs/tech-stack/backend.md. Only the stale-signal, altitude-delta,
+// and speed-delta rules are implemented so far; the remaining rules
+// (geofence, watchlist) land in later milestones, see
+// docs/implementation-plan.md.
 package main
 
 import (
@@ -53,6 +54,18 @@ const (
 	// threshold — large enough to suggest a rapid descent/climb or a bad
 	// reading rather than a routine step climb/descent.
 	defaultAltitudeWarningThresholdFt = 3000
+
+	// defaultSpeedDeltaThresholdKt is the minimum |delta| between two
+	// consecutive ground-speed readings for the same aircraft that counts
+	// as a notable speed change between successive flights.updates
+	// reports.
+	defaultSpeedDeltaThresholdKt = 100
+
+	// defaultSpeedWarningThresholdKt escalates a speed_delta event to
+	// EventSeverityWarning once the jump reaches 2.5x the notable
+	// threshold — large enough to suggest an abrupt maneuver or a bad
+	// reading rather than routine acceleration/deceleration.
+	defaultSpeedWarningThresholdKt = 250
 )
 
 func healthz(w http.ResponseWriter, r *http.Request) {
@@ -110,10 +123,15 @@ func main() {
 	}
 	eventPublisher := natsutil.NewEventPublisher(js)
 
-	staleDetector := NewStaleSignalDetector(envDuration(logger, "STALE_THRESHOLD_SECONDS", defaultStaleThreshold))
+	staleThreshold := envDuration(logger, "STALE_THRESHOLD_SECONDS", defaultStaleThreshold)
+	staleDetector := NewStaleSignalDetector(staleThreshold)
 	altitudeDetector := NewAltitudeDeltaDetector(
 		envInt(logger, "ALTITUDE_DELTA_THRESHOLD_FT", defaultAltitudeDeltaThresholdFt),
 		envInt(logger, "ALTITUDE_WARNING_THRESHOLD_FT", defaultAltitudeWarningThresholdFt),
+	)
+	speedDetector := NewSpeedDeltaDetector(
+		envFloat(logger, "SPEED_DELTA_THRESHOLD_KT", defaultSpeedDeltaThresholdKt),
+		envFloat(logger, "SPEED_WARNING_THRESHOLD_KT", defaultSpeedWarningThresholdKt),
 	)
 
 	go func() {
@@ -123,6 +141,13 @@ func main() {
 			logFlightUpdate(logger, state)
 			staleDetector.Observe(state)
 			if event, ok := altitudeDetector.Observe(state); ok {
+				if err := eventPublisher.PublishEvent(ctx, event); err != nil {
+					logger.Error("publish event failed", "icao24", event.ICAO24, "type", event.Type, "err", err)
+				} else {
+					logger.Info("event detected", "icao24", event.ICAO24, "type", event.Type)
+				}
+			}
+			if event, ok := speedDetector.Observe(state); ok {
 				if err := eventPublisher.PublishEvent(ctx, event); err != nil {
 					logger.Error("publish event failed", "icao24", event.ICAO24, "type", event.Type, "err", err)
 				} else {
@@ -141,7 +166,13 @@ func main() {
 	}()
 
 	staleSweepInterval := envDuration(logger, "STALE_SWEEP_INTERVAL_SECONDS", defaultStaleSweepInterval)
-	go runStaleSweepLoop(ctx, logger, staleDetector, eventPublisher, staleSweepInterval)
+	// speedBaselineEvictAfter mirrors StaleSignalDetector's own
+	// evictAfterMultiple bookkeeping: an aircraft is only dropped from
+	// speedDetector's baseline map once it has been silent for several
+	// multiples of the stale threshold, well past the point it would
+	// already be flagged stale.
+	speedBaselineEvictAfter := staleThreshold * evictAfterMultiple
+	go runStaleSweepLoop(ctx, logger, staleDetector, speedDetector, eventPublisher, staleSweepInterval, speedBaselineEvictAfter)
 
 	go func() {
 		logger.Info("starting server", "addr", srv.Addr)
@@ -164,8 +195,8 @@ func main() {
 
 // logFlightUpdate records receipt of a flights.updates message. Rule
 // evaluation that needs more than a single update in isolation (e.g. the
-// altitude-delta rule, evaluated inline in the subscriber callback above;
-// the speed-delta rule not yet implemented) hangs off this same callback.
+// altitude-delta and speed-delta rules, evaluated inline in the subscriber
+// callback above) hangs off this same callback.
 func logFlightUpdate(logger *slog.Logger, state flightmodel.FlightState) {
 	var callsign string
 	if state.Callsign != nil {
@@ -178,8 +209,12 @@ func logFlightUpdate(logger *slog.Logger, state flightmodel.FlightState) {
 // gone silent past threshold and publishes the resulting Events to
 // events.detected until ctx is done. A failed publish is logged and
 // skipped rather than stopping the loop, mirroring the normalizer's
-// bulkhead handling of transient NATS hiccups (cmd/normalizer/main.go).
-func runStaleSweepLoop(ctx context.Context, logger *slog.Logger, detector *StaleSignalDetector, publisher *natsutil.EventPublisher, interval time.Duration) {
+// bulkhead handling of transient NATS hiccups (cmd/normalizer/main.go). It
+// also evicts speedDetector's per-aircraft baselines once an aircraft has
+// been silent for speedBaselineEvictAfter, bounding that detector's memory
+// growth for aircraft that have gone away rather than tracking them for
+// the life of the process.
+func runStaleSweepLoop(ctx context.Context, logger *slog.Logger, detector *StaleSignalDetector, speedDetector *SpeedDeltaDetector, publisher *natsutil.EventPublisher, interval, speedBaselineEvictAfter time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -190,13 +225,15 @@ func runStaleSweepLoop(ctx context.Context, logger *slog.Logger, detector *Stale
 		case <-ticker.C:
 		}
 
-		for _, event := range detector.Sweep(time.Now()) {
+		now := time.Now()
+		for _, event := range detector.Sweep(now) {
 			if err := publisher.PublishEvent(ctx, event); err != nil {
 				logger.Error("publish event failed", "icao24", event.ICAO24, "type", event.Type, "err", err)
 				continue
 			}
 			logger.Info("event detected", "icao24", event.ICAO24, "type", event.Type)
 		}
+		speedDetector.EvictBefore(now.Add(-speedBaselineEvictAfter))
 	}
 }
 
@@ -215,6 +252,19 @@ func envInt(logger *slog.Logger, key string, fallback int) int {
 	n, err := strconv.Atoi(v)
 	if err != nil || n <= 0 {
 		logger.Warn("invalid integer env var, using default", "key", key, "value", v, "default", fallback)
+		return fallback
+	}
+	return n
+}
+
+func envFloat(logger *slog.Logger, key string, fallback float64) float64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.ParseFloat(v, 64)
+	if err != nil || n <= 0 {
+		logger.Warn("invalid float env var, using default", "key", key, "value", v, "default", fallback)
 		return fallback
 	}
 	return n
