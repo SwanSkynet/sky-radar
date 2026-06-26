@@ -1,0 +1,142 @@
+# Runbook: Phase 1 24-Hour Soak Test
+
+## Purpose
+
+[`phase-1-foundation.md`](../prd/phase-1-foundation.md) and the
+[implementation plan](../implementation-plan.md#phase-1--foundation) gate
+Phase 1 on the system running **unattended for 24+ hours with no manual
+restarts**. This runbook is how to actually run and judge that test, either
+against the local `docker-compose` stack or the production Fly.io
+deployment.
+
+## Prerequisites
+
+- `curl` and `bash` (the soak script has no other dependencies).
+- For a local run: `docker compose` (see [`docker-compose.yml`](../../docker-compose.yml)).
+- For a production run: the public apigateway URL from
+  [`hosting-and-deployment.md`](../tech-stack/hosting-and-deployment.md)
+  (`https://sky-radar-apigateway.fly.dev`); the adapters/normalizer are
+  internal-only on Fly's private network, so they can't be polled directly
+  from outside — see "Production run" below for the workaround.
+
+## What the script checks
+
+[`scripts/soak-test.sh`](../../scripts/soak-test.sh) polls every Phase 1
+service's `/healthz` plus the public `GET /flights` route on a fixed
+interval (default: every 60s, for 24h), and logs every check. It tracks,
+per target: total checks, failures, uptime %, and the longest unbroken
+outage. As of this runbook, every backend service's `/healthz` actually
+pings Redis rather than unconditionally returning `200` — see
+[P1-FR7](../prd/phase-1-foundation.md#functional-requirements) — so a real
+Redis outage during the soak window will show up as `DOWN` lines, not be
+silently masked.
+
+The script cannot observe whether a human manually restarted a container or
+Fly machine during the window — that half of the "no manual restarts"
+criterion is on the operator's honor system. Don't restart anything by hand
+during the run; if a service needs to recover, let `restart: unless-stopped`
+(local) or Fly's own health-check-triggered restart (production) handle it,
+and let the script's `DOWN`/`RECOVERED` log lines capture that it happened.
+
+## Local run (docker-compose)
+
+```sh
+docker compose up -d --build
+./scripts/soak-test.sh                       # 24h, 60s interval, default ports
+```
+
+To do a quick smoke check before committing to the full 24h window:
+
+```sh
+./scripts/soak-test.sh --once
+```
+
+Override duration/interval for a shorter dry run:
+
+```sh
+SOAK_DURATION_SECONDS=3600 SOAK_INTERVAL_SECONDS=30 ./scripts/soak-test.sh
+```
+
+## Production run (Fly.io)
+
+The adapters and normalizer aren't publicly reachable (see the topology
+table in [`hosting-and-deployment.md`](../tech-stack/hosting-and-deployment.md)),
+so only the apigateway target is checkable from outside Fly's private
+network. Run the script with just that target meaningfully populated, and
+rely on `flyctl` for the rest (next section):
+
+```sh
+APIGATEWAY_URL=https://sky-radar-apigateway.fly.dev \
+NORMALIZER_URL=https://sky-radar-apigateway.fly.dev \
+ADAPTER_OPENSKY_URL=https://sky-radar-apigateway.fly.dev \
+ADAPTER_ADSBLOL_URL=https://sky-radar-apigateway.fly.dev \
+ADAPTER_AIRPLANESLIVE_URL=https://sky-radar-apigateway.fly.dev \
+./scripts/soak-test.sh
+```
+
+(Pointing the unreachable targets at the apigateway URL too just keeps the
+script's uptime math meaningful instead of permanently red on targets it
+was never going to be able to reach; the apigateway-healthz and
+apigateway-flights lines are the ones that matter here.)
+
+In parallel, use Fly's own tooling for the internal services and for
+restart history:
+
+```sh
+flyctl machine list -a sky-radar-adapter-opensky        # one row per machine + state
+flyctl machine list -a sky-radar-adapter-adsblol
+flyctl machine list -a sky-radar-adapter-airplaneslive
+flyctl machine list -a sky-radar-normalizer
+flyctl machine status <machine-id> -a <app>             # per-machine event log (start/stop/restart, with timestamps)
+flyctl checks list -a sky-radar-apigateway               # Fly's own /healthz check history
+```
+
+The event log from `flyctl machine status` over the 24h window is the
+authoritative signal for "no manual restarts" in production: any
+start/stop/restart event in that window needs an explanation (a Fly-side
+health-check-triggered restart is acceptable and should also show up as a
+`DOWN`/`RECOVERED` pair in the soak script's log; a restart with no
+corresponding cause is the thing to investigate).
+
+## Checking P1-FR2 (no sustained rate-limiting)
+
+[P1-FR2](../prd/phase-1-foundation.md#functional-requirements) requires
+"zero sustained `429` responses" from each adapter. Adapter errors are
+logged as structured JSON with the literal status code in the message
+(e.g. `"opensky: status 429"`), so grep for it after the run:
+
+```sh
+# Local
+docker compose logs adapter-opensky adapter-adsblol adapter-airplaneslive | grep '"err":"[a-z.]*: status 429"'
+
+# Production
+flyctl logs -a sky-radar-adapter-opensky | grep 'status 429'
+flyctl logs -a sky-radar-adapter-adsblol | grep 'status 429'
+flyctl logs -a sky-radar-adapter-airplaneslive | grep 'status 429'
+```
+
+A handful of isolated `429`s is expected (the backoff in
+[`internal/sourceadapter/backoff.go`](../../internal/sourceadapter/backoff.go)
+exists to handle exactly that). What fails the criterion is a *sustained*
+run of them — i.e. the adapter logging `429`s back-to-back for many
+consecutive poll cycles instead of recovering within a few retries.
+
+## Pass / fail
+
+The soak test passes when, over the full 24h+ window:
+
+- The soak script's summary shows 0 failures on every target it could
+  reach (or: any `DOWN` windows are brief, self-recovered, and explained —
+  e.g. a single missed poll during a Fly rolling deploy, not an outage).
+- `flyctl machine status`'s event log (production) shows no restarts, or
+  any restart is explained by an automatic recovery from a real transient
+  failure, not a human intervening.
+- The P1-FR2 grep above shows no sustained `429` runs for any adapter.
+- `GET /flights` returns a non-empty, changing set of aircraft across the
+  window (spot-check a few timestamps in the log/manually), confirming data
+  is actually flowing end-to-end and not just that the process is up.
+
+If any of the above fails, fix the root cause and restart the 24h clock —
+per the [implementation plan](../implementation-plan.md#phase-1--foundation),
+this milestone is "calendar-blocking": Phase 1 isn't done until a full
+unattended run passes.

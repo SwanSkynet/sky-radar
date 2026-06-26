@@ -30,9 +30,23 @@ const (
 	defaultRedisAddr    = "localhost:6379"
 )
 
-func healthz(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("ok"))
+// healthz reports unhealthy (503) if Redis is unreachable, rather than
+// always returning 200, so a Fly health check (or the soak-test monitor in
+// scripts/soak-test.sh) actually detects the Redis-dependency outage this
+// adapter cannot run without, instead of masking it during unattended
+// operation (see docs/prd/phase-1-foundation.md's 24-hour soak requirement).
+func healthz(redisClient *redisutil.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := redisClient.Ping(ctx); err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("unhealthy: redis unreachable"))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}
 }
 
 func main() {
@@ -44,7 +58,6 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", healthz)
 
 	srv := &http.Server{
 		Addr:              ":" + port,
@@ -77,6 +90,8 @@ func main() {
 		logger.Error("redis ping failed", "err", err)
 		os.Exit(1)
 	}
+
+	mux.HandleFunc("GET /healthz", healthz(redisClient))
 
 	pollInterval := envDuration("POLL_INTERVAL_SECONDS", defaultPollInterval)
 	rawStateTTL := envDuration("RAW_STATE_TTL_SECONDS", defaultRawStateTTL)
