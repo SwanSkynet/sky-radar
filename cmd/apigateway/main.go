@@ -29,10 +29,17 @@ const (
 
 // newRouter wires the public REST and WebSocket routes onto a fresh mux.
 // Pulled out of main so tests can exercise the same routing this binary
-// actually serves. wsGW and replay may be nil in tests that don't exercise
-// those paths, in which case GET /ws and GET /replay are simply not
-// registered.
+// actually serves. wsGW, replay, zones, watchlist, and events may be nil in
+// tests that don't exercise those paths, in which case their routes are
+// simply not registered.
 func newRouter(api *flightsAPI, wsGW *wsGateway, replay *replayAPI) http.Handler {
+	return newRouterWithExtras(api, wsGW, replay, nil, nil, nil)
+}
+
+// newRouterWithExtras is newRouter plus the zones/watchlist/events
+// endpoints, split out so existing tests that only need flightsAPI can
+// keep calling newRouter without constructing a Postgres-backed Store.
+func newRouterWithExtras(api *flightsAPI, wsGW *wsGateway, replay *replayAPI, zones *zonesAPI, watchlist *watchlistAPI, events *eventsAPI) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", health.Live)
 	mux.HandleFunc("GET /readyz", health.Ready(api.redis))
@@ -44,19 +51,34 @@ func newRouter(api *flightsAPI, wsGW *wsGateway, replay *replayAPI) http.Handler
 	if replay != nil {
 		mux.HandleFunc("GET /replay", replay.getReplay)
 	}
+	if zones != nil {
+		mux.HandleFunc("POST /zones", zones.createZone)
+		mux.HandleFunc("GET /zones", zones.listZones)
+		mux.HandleFunc("DELETE /zones/{id}", zones.deleteZone)
+	}
+	if watchlist != nil {
+		mux.HandleFunc("POST /watchlist", watchlist.createWatchlistEntry)
+		mux.HandleFunc("GET /watchlist", watchlist.listWatchlistEntries)
+		mux.HandleFunc("DELETE /watchlist/{id}", watchlist.deleteWatchlistEntry)
+	}
+	if events != nil {
+		mux.HandleFunc("GET /events", events.listEvents)
+	}
 	return withCORS(mux)
 }
 
-// withCORS allows any origin to read this anonymous, read-only public API
-// (see docs/prd/phase-1-foundation.md: "anonymous-only, generous limits,
-// since there's no abuse surface yet"), so the frontend dev server
-// (different origin/port) can poll it directly without a proxy.
+// withCORS allows any origin to use this anonymous public API (see
+// docs/prd/phase-1-foundation.md: "anonymous-only, generous limits, since
+// there's no abuse surface yet"), so the frontend dev server (different
+// origin/port) can call it directly without a proxy. POST/DELETE and the
+// X-Session-ID header are allowed for the session-scoped zones/watchlist
+// write endpoints alongside the original read-only GET routes.
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		if r.Method == http.MethodOptions {
-			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, "+sessionHeader)
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
@@ -121,6 +143,9 @@ func main() {
 	hub := newWSHub()
 	wsGW := newWSGateway(hub, js, logger)
 	replay := &replayAPI{js: js, pg: pg, logger: logger}
+	zonesH := &zonesAPI{pg: pg, logger: logger}
+	watchlistH := &watchlistAPI{pg: pg, logger: logger}
+	eventsH := &eventsAPI{pg: pg, logger: logger}
 
 	liveTail, err := natsutil.NewFlightStateLiveTailReader(ctx, js)
 	if err != nil {
@@ -138,7 +163,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:    ":" + port,
-		Handler: newRouter(api, wsGW, replay),
+		Handler: newRouterWithExtras(api, wsGW, replay, zonesH, watchlistH, eventsH),
 		// ReadTimeout/WriteTimeout are deliberately unset: net/http sets
 		// them as fixed deadlines on the underlying connection before the
 		// handler runs, and Hijack (which GET /ws relies on for the

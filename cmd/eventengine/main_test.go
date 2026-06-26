@@ -120,6 +120,48 @@ func TestEnvWatchlistEntriesMalformedJSONReturnsError(t *testing.T) {
 	}
 }
 
+func TestMergeZonesOverlayWinsOnConflictingID(t *testing.T) {
+	base := []flightmodel.Zone{{ID: "z1", Name: "Base Name"}, {ID: "z2", Name: "Base Only"}}
+	overlay := []flightmodel.Zone{{ID: "z1", Name: "Overlay Name"}, {ID: "z3", Name: "Overlay Only"}}
+
+	merged := mergeZones(base, overlay)
+
+	byID := make(map[string]flightmodel.Zone, len(merged))
+	for _, z := range merged {
+		byID[z.ID] = z
+	}
+	if len(byID) != 3 {
+		t.Fatalf("merged %d zones, want 3: %+v", len(byID), merged)
+	}
+	if byID["z1"].Name != "Overlay Name" {
+		t.Errorf("z1.Name = %q, want overlay to win: %q", byID["z1"].Name, "Overlay Name")
+	}
+	if byID["z2"].Name != "Base Only" {
+		t.Errorf("z2.Name = %q, want %q (base-only entry preserved)", byID["z2"].Name, "Base Only")
+	}
+	if byID["z3"].Name != "Overlay Only" {
+		t.Errorf("z3.Name = %q, want %q (overlay-only entry preserved)", byID["z3"].Name, "Overlay Only")
+	}
+}
+
+func TestMergeWatchlistEntriesOverlayWinsOnConflictingID(t *testing.T) {
+	base := []flightmodel.WatchlistEntry{{ID: "w1", Label: "Base Label"}}
+	overlay := []flightmodel.WatchlistEntry{{ID: "w1", Label: "Overlay Label"}, {ID: "w2", Label: "Overlay Only"}}
+
+	merged := mergeWatchlistEntries(base, overlay)
+
+	byID := make(map[string]flightmodel.WatchlistEntry, len(merged))
+	for _, e := range merged {
+		byID[e.ID] = e
+	}
+	if len(byID) != 2 {
+		t.Fatalf("merged %d entries, want 2: %+v", len(byID), merged)
+	}
+	if byID["w1"].Label != "Overlay Label" {
+		t.Errorf("w1.Label = %q, want overlay to win: %q", byID["w1"].Label, "Overlay Label")
+	}
+}
+
 func TestLogFlightUpdateDoesNotPanic(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	callsign := "UAL123"

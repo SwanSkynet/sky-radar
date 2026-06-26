@@ -27,15 +27,19 @@ type WatchlistDetector struct {
 // NewWatchlistDetector returns a detector that evaluates every observed
 // FlightState against entries, keyed by ICAO24.
 func NewWatchlistDetector(entries []flightmodel.WatchlistEntry) *WatchlistDetector {
+	return &WatchlistDetector{
+		entries:        entriesByICAO24(entries),
+		matched:        make(map[string]bool),
+		lastObservedAt: make(map[string]time.Time),
+	}
+}
+
+func entriesByICAO24(entries []flightmodel.WatchlistEntry) map[string]flightmodel.WatchlistEntry {
 	byICAO24 := make(map[string]flightmodel.WatchlistEntry, len(entries))
 	for _, entry := range entries {
 		byICAO24[normalizeICAO24(entry.ICAO24)] = entry
 	}
-	return &WatchlistDetector{
-		entries:        byICAO24,
-		matched:        make(map[string]bool),
-		lastObservedAt: make(map[string]time.Time),
-	}
+	return byICAO24
 }
 
 // Observe returns a watchlist_match Event the first time state's ICAO24 is
@@ -44,13 +48,14 @@ func NewWatchlistDetector(entries []flightmodel.WatchlistEntry) *WatchlistDetect
 // notification per continuous period in view rather than one per update.
 func (d *WatchlistDetector) Observe(state flightmodel.FlightState) (flightmodel.Event, bool) {
 	icao24 := normalizeICAO24(state.ICAO24)
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
 	entry, onWatchlist := d.entries[icao24]
 	if !onWatchlist {
 		return flightmodel.Event{}, false
 	}
-
-	d.mu.Lock()
-	defer d.mu.Unlock()
 
 	d.lastObservedAt[icao24] = state.LastSeenUTC
 	if d.matched[icao24] {
@@ -59,6 +64,21 @@ func (d *WatchlistDetector) Observe(state flightmodel.FlightState) (flightmodel.
 	d.matched[icao24] = true
 
 	return newWatchlistEvent(entry, state.LastSeenUTC), true
+}
+
+// SetEntries replaces the watchlist entries Observe evaluates against, so
+// a long-running engine process picks up entries created/deleted through
+// the API without a restart (see runZonesWatchlistRefreshLoop in main.go).
+// Per-aircraft match state for an entry that's no longer present is left
+// in place rather than pruned: it's harmless (no future Observe call can
+// match against a missing entry) and EvictBefore's existing time-based
+// cleanup already bounds its growth.
+func (d *WatchlistDetector) SetEntries(entries []flightmodel.WatchlistEntry) {
+	byICAO24 := entriesByICAO24(entries)
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.entries = byICAO24
 }
 
 // normalizeICAO24 lowercases icao24 so lookups are insensitive to the casing

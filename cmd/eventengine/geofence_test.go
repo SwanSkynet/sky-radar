@@ -192,6 +192,41 @@ func TestGeofenceEvictBeforeDropsStaleAircraft(t *testing.T) {
 	}
 }
 
+func TestGeofenceSetZonesReplacesZoneSet(t *testing.T) {
+	d := NewGeofenceDetector(nil)
+	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+
+	d.Observe(flightmodel.FlightState{ICAO24: "a1b2c3", Lat: 39.0, Lon: -122.25, LastSeenUTC: now})
+
+	d.SetZones([]flightmodel.Zone{squareZone("z1", "SFO Approach")})
+
+	// The zone is new to this aircraft's tracking, so the first Observe
+	// against it only establishes the outside baseline (no event yet),
+	// mirroring the documented first-sighting behavior; the following
+	// Observe crossing in then triggers the enter.
+	baseline := d.Observe(flightmodel.FlightState{ICAO24: "a1b2c3", Lat: 39.0, Lon: -122.25, LastSeenUTC: now.Add(10 * time.Second)})
+	if len(baseline) != 0 {
+		t.Fatalf("Observe establishing baseline for newly added zone = %+v, want no events", baseline)
+	}
+	events := d.Observe(flightmodel.FlightState{ICAO24: "a1b2c3", Lat: 37.75, Lon: -122.25, LastSeenUTC: now.Add(20 * time.Second)})
+	if len(events) != 1 || events[0].Type != flightmodel.EventTypeGeofenceEnter {
+		t.Fatalf("Observe after SetZones = %+v, want a single geofence_enter event for the newly added zone", events)
+	}
+}
+
+func TestGeofenceSetZonesToEmptyStopsTriggering(t *testing.T) {
+	d := NewGeofenceDetector([]flightmodel.Zone{squareZone("z1", "SFO Approach")})
+	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+
+	d.Observe(flightmodel.FlightState{ICAO24: "a1b2c3", Lat: 39.0, Lon: -122.25, LastSeenUTC: now})
+	d.SetZones(nil)
+
+	events := d.Observe(flightmodel.FlightState{ICAO24: "a1b2c3", Lat: 37.75, Lon: -122.25, LastSeenUTC: now.Add(10 * time.Second)})
+	if len(events) != 0 {
+		t.Fatalf("Observe after SetZones(nil) = %+v, want no events", events)
+	}
+}
+
 func TestGeofenceEvictBeforeKeepsRecentAircraft(t *testing.T) {
 	d := NewGeofenceDetector([]flightmodel.Zone{squareZone("z1", "SFO Approach")})
 	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
