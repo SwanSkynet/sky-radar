@@ -54,6 +54,18 @@ Zone {
 }
 ```
 
+## WatchlistEntry (durable, Postgres `watchlist_entries` table)
+```
+WatchlistEntry {
+  id: uuid
+  icao24: string              // aircraft tracked by this entry
+  label: string               // user-facing name, e.g. "Friend's flight"
+  created_by_session: string  // anonymous/session-scoped identifier, mirrors Zone
+  created_at: timestamp
+}
+```
+A `watchlist_match` Event fires the first time the event engine observes a `FlightState` for `icao24` after it is added to the watchlist (or after the aircraft has gone silent and reappears) — one notification per continuous period in view, not one per update.
+
 ## flight_history (durable, Postgres, downsampled)
 ```sql
 flight_history (
