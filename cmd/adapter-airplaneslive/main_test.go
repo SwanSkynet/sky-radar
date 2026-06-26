@@ -7,15 +7,8 @@ import (
 
 	"github.com/SwanSkynet/sky-radar/internal/health"
 	"github.com/SwanSkynet/sky-radar/internal/redisutil"
-	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 )
-
-func testRedisClient(t *testing.T) *redisutil.Client {
-	t.Helper()
-	mr := miniredis.RunT(t)
-	return redisutil.New(&redis.Options{Addr: mr.Addr()})
-}
 
 func TestHealthzRouteWiredToLive(t *testing.T) {
 	mux := http.NewServeMux()
