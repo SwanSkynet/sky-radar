@@ -55,3 +55,23 @@ func TestPointInPolygonEmptyPolygon(t *testing.T) {
 		t.Fatal("PointInPolygon: want empty polygon to contain no points, got inside")
 	}
 }
+
+func TestPointInPolygonSkipsMalformedCoordinatePairs(t *testing.T) {
+	// A malformed entry ([-122.2] has only one element) must be skipped
+	// rather than turned into a zero-value (0, 0) point, which would
+	// otherwise distort the ring and corrupt containment checks for points
+	// nowhere near the polygon's real vertices.
+	polygon := flightmodel.GeoJSONPolygon{
+		Type: "Polygon",
+		Coordinates: [][][]float64{
+			{{-122.5, 37.5}, {-122.0, 37.5}, {-122.2}, {-122.0, 38.0}, {-122.5, 38.0}, {-122.5, 37.5}},
+		},
+	}
+
+	if !PointInPolygon(polygon, 37.75, -122.25) {
+		t.Fatal("PointInPolygon: want point inside square zone despite malformed coordinate, got outside")
+	}
+	if PointInPolygon(polygon, 0, 0) {
+		t.Fatal("PointInPolygon: want origin treated as outside, got inside (malformed coordinate likely produced a spurious (0,0) vertex)")
+	}
+}

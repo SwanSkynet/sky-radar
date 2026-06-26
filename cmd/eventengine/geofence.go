@@ -19,16 +19,18 @@ import (
 type GeofenceDetector struct {
 	zones []flightmodel.Zone
 
-	mu     sync.Mutex
-	inside map[string]map[string]bool // icao24 -> zone ID -> currently inside
+	mu             sync.Mutex
+	inside         map[string]map[string]bool // icao24 -> zone ID -> currently inside
+	lastObservedAt map[string]time.Time
 }
 
 // NewGeofenceDetector returns a detector that evaluates every observed
 // FlightState against zones.
 func NewGeofenceDetector(zones []flightmodel.Zone) *GeofenceDetector {
 	return &GeofenceDetector{
-		zones:  zones,
-		inside: make(map[string]map[string]bool),
+		zones:          zones,
+		inside:         make(map[string]map[string]bool),
+		lastObservedAt: make(map[string]time.Time),
 	}
 }
 
@@ -50,6 +52,7 @@ func (d *GeofenceDetector) Observe(state flightmodel.FlightState) []flightmodel.
 		zoneStates = make(map[string]bool)
 		d.inside[state.ICAO24] = zoneStates
 	}
+	d.lastObservedAt[state.ICAO24] = state.LastSeenUTC
 
 	var events []flightmodel.Event
 	for _, zone := range d.zones {
@@ -68,6 +71,23 @@ func (d *GeofenceDetector) Observe(state flightmodel.FlightState) []flightmodel.
 		}
 	}
 	return events
+}
+
+// EvictBefore removes tracked containment state for aircraft last observed
+// before cutoff, bounding inside's growth for aircraft that have gone
+// silent rather than retaining every ICAO24 ever seen for the life of the
+// process. Callers should pass a cutoff derived from the stale-signal
+// threshold, mirroring SpeedDeltaDetector.EvictBefore.
+func (d *GeofenceDetector) EvictBefore(cutoff time.Time) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	for icao24, lastObserved := range d.lastObservedAt {
+		if lastObserved.Before(cutoff) {
+			delete(d.inside, icao24)
+			delete(d.lastObservedAt, icao24)
+		}
+	}
 }
 
 // geofenceDetail is the type-specific Event.Detail payload for

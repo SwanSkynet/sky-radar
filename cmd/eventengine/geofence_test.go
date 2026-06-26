@@ -176,3 +176,33 @@ func TestGeofenceObserveNoZonesNeverTriggers(t *testing.T) {
 		t.Fatalf("Observe with no zones = %d events, want 0", len(events))
 	}
 }
+
+func TestGeofenceEvictBeforeDropsStaleAircraft(t *testing.T) {
+	d := NewGeofenceDetector([]flightmodel.Zone{squareZone("z1", "SFO Approach")})
+	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+
+	d.Observe(flightmodel.FlightState{ICAO24: "a1b2c3", Lat: 37.75, Lon: -122.25, LastSeenUTC: now})
+	d.EvictBefore(now.Add(time.Second))
+
+	// Evicted aircraft has lost its baseline, so re-entering the zone is
+	// treated like a first sighting (no event) rather than "still inside".
+	events := d.Observe(flightmodel.FlightState{ICAO24: "a1b2c3", Lat: 37.75, Lon: -122.25, LastSeenUTC: now.Add(2 * time.Second)})
+	if len(events) != 0 {
+		t.Fatalf("Observe after eviction = %d events, want 0 (baseline should be cleared)", len(events))
+	}
+}
+
+func TestGeofenceEvictBeforeKeepsRecentAircraft(t *testing.T) {
+	d := NewGeofenceDetector([]flightmodel.Zone{squareZone("z1", "SFO Approach")})
+	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+
+	d.Observe(flightmodel.FlightState{ICAO24: "a1b2c3", Lat: 39.0, Lon: -122.25, LastSeenUTC: now})
+	d.EvictBefore(now.Add(-time.Second))
+
+	// Baseline survives since the aircraft was observed after the cutoff,
+	// so a later crossing still triggers an enter event.
+	events := d.Observe(flightmodel.FlightState{ICAO24: "a1b2c3", Lat: 37.75, Lon: -122.25, LastSeenUTC: now.Add(10 * time.Second)})
+	if len(events) != 1 || events[0].Type != flightmodel.EventTypeGeofenceEnter {
+		t.Fatalf("Observe after no-op eviction = %+v, want a single geofence_enter event", events)
+	}
+}

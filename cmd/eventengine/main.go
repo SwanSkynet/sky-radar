@@ -140,7 +140,12 @@ func main() {
 		envFloat(logger, "SPEED_DELTA_THRESHOLD_KT", defaultSpeedDeltaThresholdKt),
 		envFloat(logger, "SPEED_WARNING_THRESHOLD_KT", defaultSpeedWarningThresholdKt),
 	)
-	geofenceDetector := NewGeofenceDetector(envZones(logger, geofenceZonesEnvVar))
+	zones, err := envZones(geofenceZonesEnvVar)
+	if err != nil {
+		logger.Error("invalid zones JSON env var", "key", geofenceZonesEnvVar, "err", err)
+		os.Exit(1)
+	}
+	geofenceDetector := NewGeofenceDetector(zones)
 
 	go func() {
 		if err := subscriber.Run(ctx, func(err error) {
@@ -187,7 +192,7 @@ func main() {
 	// multiples of the stale threshold, well past the point it would
 	// already be flagged stale.
 	speedBaselineEvictAfter := staleThreshold * evictAfterMultiple
-	go runStaleSweepLoop(ctx, logger, staleDetector, speedDetector, eventPublisher, staleSweepInterval, speedBaselineEvictAfter)
+	go runStaleSweepLoop(ctx, logger, staleDetector, speedDetector, geofenceDetector, eventPublisher, staleSweepInterval, speedBaselineEvictAfter)
 
 	go func() {
 		logger.Info("starting server", "addr", srv.Addr)
@@ -225,11 +230,11 @@ func logFlightUpdate(logger *slog.Logger, state flightmodel.FlightState) {
 // events.detected until ctx is done. A failed publish is logged and
 // skipped rather than stopping the loop, mirroring the normalizer's
 // bulkhead handling of transient NATS hiccups (cmd/normalizer/main.go). It
-// also evicts speedDetector's per-aircraft baselines once an aircraft has
-// been silent for speedBaselineEvictAfter, bounding that detector's memory
-// growth for aircraft that have gone away rather than tracking them for
-// the life of the process.
-func runStaleSweepLoop(ctx context.Context, logger *slog.Logger, detector *StaleSignalDetector, speedDetector *SpeedDeltaDetector, publisher *natsutil.EventPublisher, interval, speedBaselineEvictAfter time.Duration) {
+// also evicts speedDetector's and geofenceDetector's per-aircraft state
+// once an aircraft has been silent for speedBaselineEvictAfter, bounding
+// those detectors' memory growth for aircraft that have gone away rather
+// than tracking them for the life of the process.
+func runStaleSweepLoop(ctx context.Context, logger *slog.Logger, detector *StaleSignalDetector, speedDetector *SpeedDeltaDetector, geofenceDetector *GeofenceDetector, publisher *natsutil.EventPublisher, interval, speedBaselineEvictAfter time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -249,6 +254,7 @@ func runStaleSweepLoop(ctx context.Context, logger *slog.Logger, detector *Stale
 			logger.Info("event detected", "icao24", event.ICAO24, "type", event.Type)
 		}
 		speedDetector.EvictBefore(now.Add(-speedBaselineEvictAfter))
+		geofenceDetector.EvictBefore(now.Add(-speedBaselineEvictAfter))
 	}
 }
 
@@ -286,21 +292,22 @@ func envFloat(logger *slog.Logger, key string, fallback float64) float64 {
 }
 
 // envZones parses key as a JSON array of flightmodel.Zone, returning nil
-// (no zones, geofence detection becomes a no-op) if the env var is unset or
-// fails to parse. This is a placeholder zone source until zones have a
-// durable home in Postgres (out of scope for this milestone, see
-// docs/implementation-plan.md).
-func envZones(logger *slog.Logger, key string) []flightmodel.Zone {
+// (no zones, geofence detection becomes a no-op) if the env var is unset.
+// Malformed JSON is a startup-class failure rather than a silent fallback
+// to no zones: with zones still env-sourced (durable Postgres storage is
+// out of scope for this milestone, see docs/implementation-plan.md),
+// silently ignoring a bad value would leave /healthz reporting ok while the
+// configured zone source is actually broken.
+func envZones(key string) ([]flightmodel.Zone, error) {
 	v := os.Getenv(key)
 	if v == "" {
-		return nil
+		return nil, nil
 	}
 	var zones []flightmodel.Zone
 	if err := json.Unmarshal([]byte(v), &zones); err != nil {
-		logger.Warn("invalid zones JSON env var, ignoring", "key", key, "err", err)
-		return nil
+		return nil, err
 	}
-	return zones
+	return zones, nil
 }
 
 func envDuration(logger *slog.Logger, key string, fallback time.Duration) time.Duration {

@@ -23,12 +23,12 @@ func PointInPolygon(polygon flightmodel.GeoJSONPolygon, lat, lon float64) bool {
 
 	rings := make(orb.Polygon, len(polygon.Coordinates))
 	for i, ring := range polygon.Coordinates {
-		points := make(orb.Ring, len(ring))
-		for j, pos := range ring {
+		points := make(orb.Ring, 0, len(ring))
+		for _, pos := range ring {
 			if len(pos) < 2 {
 				continue
 			}
-			points[j] = orb.Point{pos[0], pos[1]} // GeoJSON order: [lon, lat]
+			points = append(points, orb.Point{pos[0], pos[1]}) // GeoJSON order: [lon, lat]
 		}
 		rings[i] = points
 	}
