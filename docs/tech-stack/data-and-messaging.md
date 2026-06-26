@@ -27,7 +27,7 @@ Covers NATS JetStream (stream bus), Redis (hot state + cache), and PostgreSQL (d
 - `ratelimit:*` — token-bucket counters for per-API-key rate limiting, shared across API gateway instances.
 
 ## PostgreSQL — durable store
-**Role:** event history and a downsampled position history backing replay beyond Redis's hot window, plus zones.
+**Role:** event history and a downsampled position history backing replay beyond Redis's hot window, plus zones and watchlist entries.
 
 **Why downsampled, not every update:** writing every single normalized update (potentially every 1-5s per aircraft, tens of thousands of aircraft) to Postgres would be an unnecessary write-amplification and storage cost for a project with a near-zero budget. The durable-store writer batches and downsamples to one row per aircraft per ~10s interval for `flight_history`; full-resolution recent data lives only in Redis/JetStream's retention window. This is a deliberate cost/fidelity trade-off, not an oversight — document it as such if asked why replay beyond ~30 minutes is lower-resolution.
 
@@ -58,6 +58,14 @@ CREATE TABLE zones (
   id uuid PRIMARY KEY,
   name text NOT NULL,
   polygon jsonb NOT NULL,        -- GeoJSON; see note below on PostGIS
+  created_by_session text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE watchlist_entries (
+  id uuid PRIMARY KEY,
+  icao24 text NOT NULL,
+  label text NOT NULL,
   created_by_session text NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now()
 );

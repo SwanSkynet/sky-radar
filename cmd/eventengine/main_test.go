@@ -81,6 +81,45 @@ func TestEnvZonesMalformedJSONReturnsError(t *testing.T) {
 	}
 }
 
+func TestEnvWatchlistEntriesUnsetReturnsNilNoError(t *testing.T) {
+	const key = "EVENTENGINE_TEST_WATCHLIST_UNSET"
+	t.Setenv(key, "")
+
+	entries, err := envWatchlistEntries(key)
+	if err != nil {
+		t.Fatalf("envWatchlistEntries: unexpected error %v", err)
+	}
+	if entries != nil {
+		t.Errorf("entries = %v, want nil", entries)
+	}
+}
+
+func TestEnvWatchlistEntriesValidJSONParses(t *testing.T) {
+	const key = "EVENTENGINE_TEST_WATCHLIST_VALID"
+	t.Setenv(key, `[{"id":"w1","icao24":"a1b2c3","label":"Friend's flight"}]`)
+
+	entries, err := envWatchlistEntries(key)
+	if err != nil {
+		t.Fatalf("envWatchlistEntries: unexpected error %v", err)
+	}
+	if len(entries) != 1 || entries[0].ID != "w1" {
+		t.Errorf("entries = %+v, want a single entry w1", entries)
+	}
+}
+
+func TestEnvWatchlistEntriesMalformedJSONReturnsError(t *testing.T) {
+	const key = "EVENTENGINE_TEST_WATCHLIST_MALFORMED"
+	t.Setenv(key, `not valid json`)
+
+	entries, err := envWatchlistEntries(key)
+	if err == nil {
+		t.Fatal("envWatchlistEntries: want error for malformed JSON, got nil")
+	}
+	if entries != nil {
+		t.Errorf("entries = %v, want nil on error", entries)
+	}
+}
+
 func TestLogFlightUpdateDoesNotPanic(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	callsign := "UAL123"
