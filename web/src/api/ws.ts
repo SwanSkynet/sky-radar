@@ -49,7 +49,6 @@ function wsURL(): string {
   return `${API_BASE_URL.replace(/^http/, "ws")}/ws`;
 }
 
-
 // FlightSocket owns one logical subscription: it reconnects with backoff
 // on drop, resumes from the last sequence it saw, and re-sends the current
 // bbox as a "subscribe" on every (re)connect, matching the gateway's
