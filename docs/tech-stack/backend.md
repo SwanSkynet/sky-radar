@@ -56,7 +56,7 @@ Each `/cmd` entry is intended to become an independently deployable binary/conta
 
 - **HTTP router:** `chi` (lightweight, idiomatic, stdlib-compatible) for REST.
 - **GraphQL:** `gqlgen` (schema-first, generates type-safe resolvers matching the canonical Go types in `/internal/flightmodel`).
-- **WebSocket:** `nhooyr.io/websocket` (modern, context-aware, no legacy baggage).
+- **WebSocket:** `github.com/coder/websocket` (modern, context-aware, no legacy baggage).
 - Subscribes to `flights.updates` once per gateway instance and fans out to connected WebSocket clients, filtering server-side by each client's registered viewport bbox — this is where the "bounded per-connection bandwidth regardless of global traffic" requirement is actually implemented.
 - Owns API-key auth, per-key rate limiting (token bucket, in Redis so it works across multiple gateway instances), and response caching for REST/GraphQL reads.
 

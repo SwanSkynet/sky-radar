@@ -4,6 +4,7 @@ go 1.26.4
 
 require (
 	github.com/alicebob/miniredis/v2 v2.38.0
+	github.com/coder/websocket v1.8.15
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/nats-io/nats-server/v2 v2.14.2
 	github.com/nats-io/nats.go v1.52.0
