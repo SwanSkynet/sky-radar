@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"sort"
+	"time"
 )
 
 //go:embed migrations/*.sql
@@ -43,9 +44,10 @@ func (s *Store) Migrate(ctx context.Context) error {
 		// leave the session lock held on a connection that goes back to
 		// the pool. If the unlock still fails for some other reason, close
 		// the connection outright so the lock can't be retained.
-		unlockCtx := context.Background()
+		unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 		if _, err := conn.Exec(unlockCtx, `SELECT pg_advisory_unlock($1)`, migrationAdvisoryLockKey); err != nil {
-			conn.Conn().Close(unlockCtx)
+			_ = conn.Conn().Close(unlockCtx)
 		}
 	}()
 
