@@ -26,6 +26,24 @@ func PipelineWorkflow(ctx workflow.Context) error {
 	}
 	ctx = workflow.WithActivityOptions(ctx, ao)
 
+	// Activities that invoke Claude can hit the CLI's session/usage limit
+	// (a 429 that names a fixed reset time, e.g. "resets 6:20am"). The default
+	// 3-quick-attempts policy above just burns through retries instantly and
+	// fails the whole pipeline, requiring a manual restart every time the
+	// limit is hit - the opposite of unattended operation. This policy backs
+	// off up to an hour between attempts for up to 14 hours, comfortably
+	// covering a daily reset window without giving up.
+	claudeCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout:    60 * time.Minute,
+		ScheduleToCloseTimeout: 14 * time.Hour,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:    5 * time.Minute,
+			BackoffCoefficient: 2.0,
+			MaximumInterval:    1 * time.Hour,
+			MaximumAttempts:    0, // unbounded; ScheduleToCloseTimeout is the real bound
+		},
+	})
+
 	for {
 		var task *activities.Task
 		if err := workflow.ExecuteActivity(ctx, activities.GetNextTask).Get(ctx, &task); err != nil {
@@ -38,7 +56,7 @@ func PipelineWorkflow(ctx workflow.Context) error {
 
 		logger.Info("Starting task", "id", task.ID)
 
-		if err := workflow.ExecuteActivity(ctx, activities.RunClaude, *task).Get(ctx, nil); err != nil {
+		if err := workflow.ExecuteActivity(claudeCtx, activities.RunClaude, *task).Get(ctx, nil); err != nil {
 			return err
 		}
 
@@ -70,7 +88,7 @@ func PipelineWorkflow(ctx workflow.Context) error {
 				approved = true
 			case activities.ReviewChangesRequested:
 				logger.Info("Addressing review comments", "pr", prNumber)
-				if err := workflow.ExecuteActivity(ctx, activities.AddressFeedback, *task, "CodeRabbit's review", result.Feedback).Get(ctx, nil); err != nil {
+				if err := workflow.ExecuteActivity(claudeCtx, activities.AddressFeedback, *task, "CodeRabbit's review", result.Feedback).Get(ctx, nil); err != nil {
 					return err
 				}
 			default:
@@ -91,7 +109,7 @@ func PipelineWorkflow(ctx workflow.Context) error {
 				break
 			}
 			logger.Info("CI checks failed, addressing", "pr", prNumber)
-			if err := workflow.ExecuteActivity(ctx, activities.AddressFeedback, *task, "A failing CI check", checks.Failures).Get(ctx, nil); err != nil {
+			if err := workflow.ExecuteActivity(claudeCtx, activities.AddressFeedback, *task, "A failing CI check", checks.Failures).Get(ctx, nil); err != nil {
 				return err
 			}
 		}
