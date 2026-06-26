@@ -17,7 +17,8 @@ const POLL_INTERVAL_MS = 10_000;
 
 // Free, no-API-key basemap style, consistent with the no-revenue-model
 // constraint in docs/decisions/0004-map-rendering-maplibre-deckgl.md.
-const MAP_STYLE_URL = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
+const MAP_STYLE_URL =
+  "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
 
 const STALE_COLOR: [number, number, number, number] = [148, 148, 158, 180];
 const FRESH_COLOR: [number, number, number, number] = [56, 189, 248, 220];
