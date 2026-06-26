@@ -50,7 +50,7 @@ func TestListFlightsReturnsAircraftInsideBBox(t *testing.T) {
 	}
 
 	mux := newRouter(api, nil, nil)
-	req := httptest.NewRequest(http.MethodGet, "/flights?bbox=-123,36,-121,38", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/flights?bbox=-123,36,-121,38", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
@@ -74,7 +74,7 @@ func TestListFlightsRequiresBBoxParam(t *testing.T) {
 	api, _ := testAPI(t)
 	mux := newRouter(api, nil, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/flights", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/flights", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
@@ -87,7 +87,7 @@ func TestListFlightsRejectsMalformedBBox(t *testing.T) {
 	api, _ := testAPI(t)
 	mux := newRouter(api, nil, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/flights?bbox=not-a-bbox", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/flights?bbox=not-a-bbox", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
@@ -100,7 +100,7 @@ func TestListFlightsReturnsEmptyArrayWhenNoneMatch(t *testing.T) {
 	api, _ := testAPI(t)
 	mux := newRouter(api, nil, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/flights?bbox=-123,36,-121,38", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/flights?bbox=-123,36,-121,38", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
@@ -128,7 +128,7 @@ func TestListFlightsFiltersByCallsignSubstringCaseInsensitive(t *testing.T) {
 	}
 
 	mux := newRouter(api, nil, nil)
-	req := httptest.NewRequest(http.MethodGet, "/flights?bbox=-123,36,-121,38&callsign=ual", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/flights?bbox=-123,36,-121,38&callsign=ual", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
@@ -160,7 +160,7 @@ func TestListFlightsFiltersByAltitudeBand(t *testing.T) {
 	}
 
 	mux := newRouter(api, nil, nil)
-	req := httptest.NewRequest(http.MethodGet, "/flights?bbox=-123,36,-121,38&min_altitude_ft=10000&max_altitude_ft=40000", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/flights?bbox=-123,36,-121,38&min_altitude_ft=10000&max_altitude_ft=40000", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
@@ -206,7 +206,7 @@ func TestListFlightsFiltersByRemainingFields(t *testing.T) {
 			}
 
 			mux := newRouter(api, nil, nil)
-			req := httptest.NewRequest(http.MethodGet, "/flights?bbox=-123,36,-121,38&"+tt.query, nil)
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/flights?bbox=-123,36,-121,38&"+tt.query, nil)
 			rec := httptest.NewRecorder()
 			mux.ServeHTTP(rec, req)
 
@@ -228,7 +228,7 @@ func TestListFlightsRejectsMalformedFilterValue(t *testing.T) {
 	api, _ := testAPI(t)
 	mux := newRouter(api, nil, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/flights?bbox=-123,36,-121,38&min_altitude_ft=not-a-number", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/flights?bbox=-123,36,-121,38&min_altitude_ft=not-a-number", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
@@ -243,7 +243,7 @@ func TestListFlightsRejectsNonFiniteSpeedFilter(t *testing.T) {
 			api, _ := testAPI(t)
 			mux := newRouter(api, nil, nil)
 
-			req := httptest.NewRequest(http.MethodGet, "/flights?bbox=-123,36,-121,38&min_speed_kt="+value, nil)
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/flights?bbox=-123,36,-121,38&min_speed_kt="+value, nil)
 			rec := httptest.NewRecorder()
 			mux.ServeHTTP(rec, req)
 
@@ -272,7 +272,7 @@ func TestGetFlightReturnsCurrentState(t *testing.T) {
 	}
 
 	mux := newRouter(api, nil, nil)
-	req := httptest.NewRequest(http.MethodGet, "/flights/A1B2C3", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/flights/A1B2C3", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
@@ -296,7 +296,7 @@ func TestGetFlightReturns404WhenNotTracked(t *testing.T) {
 	api, _ := testAPI(t)
 	mux := newRouter(api, nil, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/flights/ffffff", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/flights/ffffff", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
@@ -321,7 +321,7 @@ func TestGetFlightMarksStaleAircraftStale(t *testing.T) {
 	}
 
 	mux := newRouter(api, nil, nil)
-	req := httptest.NewRequest(http.MethodGet, "/flights/a1b2c3", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/flights/a1b2c3", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 

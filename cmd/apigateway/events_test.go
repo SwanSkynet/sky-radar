@@ -19,7 +19,7 @@ func testEventsRouter(t *testing.T) (http.Handler, *eventsAPI) {
 	api, _ := testAPI(t)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	eventsH := &eventsAPI{pg: pg, logger: logger}
-	return newRouterWithExtras(api, nil, nil, nil, nil, eventsH), eventsH
+	return newRouterWithExtras(api, nil, nil, nil, nil, eventsH, nil), eventsH
 }
 
 func TestListEventsFiltersByTypeAndICAO24(t *testing.T) {
@@ -42,7 +42,7 @@ func TestListEventsFiltersByTypeAndICAO24(t *testing.T) {
 		}
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/events?type=altitude_delta&icao24="+icao24, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/events?type=altitude_delta&icao24="+icao24, nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -61,7 +61,7 @@ func TestListEventsFiltersByTypeAndICAO24(t *testing.T) {
 func TestListEventsRejectsInvalidType(t *testing.T) {
 	mux, _ := testEventsRouter(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/events?type=not_a_real_type", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/events?type=not_a_real_type", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
@@ -73,7 +73,7 @@ func TestListEventsRejectsInvalidType(t *testing.T) {
 func TestListEventsRejectsInvalidSince(t *testing.T) {
 	mux, _ := testEventsRouter(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/events?since=not-a-timestamp", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/events?since=not-a-timestamp", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
@@ -99,7 +99,7 @@ func TestListEventsRespectsLimit(t *testing.T) {
 		}
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/events?icao24="+icao24+"&limit=2", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/events?icao24="+icao24+"&limit=2", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {

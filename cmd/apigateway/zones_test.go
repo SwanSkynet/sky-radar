@@ -18,7 +18,7 @@ func testZonesRouter(t *testing.T) http.Handler {
 	pg := testReplayPostgres(t)
 	api, _ := testAPI(t)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return newRouterWithExtras(api, nil, nil, &zonesAPI{pg: pg, logger: logger}, nil, nil)
+	return newRouterWithExtras(api, nil, nil, &zonesAPI{pg: pg, logger: logger}, nil, nil, nil)
 }
 
 func validPolygonBody(name string) []byte {
@@ -37,7 +37,7 @@ func validPolygonBody(name string) []byte {
 func TestCreateZoneRequiresSessionHeader(t *testing.T) {
 	mux := testZonesRouter(t)
 
-	req := httptest.NewRequest(http.MethodPost, "/zones", bytes.NewReader(validPolygonBody("No Session")))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/zones", bytes.NewReader(validPolygonBody("No Session")))
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
@@ -50,7 +50,7 @@ func TestCreateZoneRejectsInvalidPolygon(t *testing.T) {
 	mux := testZonesRouter(t)
 
 	body, _ := json.Marshal(map[string]any{"name": "Bad Zone", "polygon": map[string]any{"type": "Point"}})
-	req := httptest.NewRequest(http.MethodPost, "/zones", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/zones", bytes.NewReader(body))
 	req.Header.Set(sessionHeader, "session-1")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -64,7 +64,7 @@ func TestCreateAndListZoneRoundTrip(t *testing.T) {
 	mux := testZonesRouter(t)
 	session := fmt.Sprintf("session-%s", t.Name())
 
-	req := httptest.NewRequest(http.MethodPost, "/zones", bytes.NewReader(validPolygonBody("My Zone")))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/zones", bytes.NewReader(validPolygonBody("My Zone")))
 	req.Header.Set(sessionHeader, session)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -80,7 +80,7 @@ func TestCreateAndListZoneRoundTrip(t *testing.T) {
 		t.Fatalf("created zone = %+v, unexpected", created)
 	}
 
-	listReq := httptest.NewRequest(http.MethodGet, "/zones", nil)
+	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/zones", nil)
 	listReq.Header.Set(sessionHeader, session)
 	listRec := httptest.NewRecorder()
 	mux.ServeHTTP(listRec, listReq)
@@ -107,7 +107,7 @@ func TestDeleteZoneRemovesIt(t *testing.T) {
 	mux := testZonesRouter(t)
 	session := fmt.Sprintf("session-%s", t.Name())
 
-	createReq := httptest.NewRequest(http.MethodPost, "/zones", bytes.NewReader(validPolygonBody("To Delete")))
+	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/zones", bytes.NewReader(validPolygonBody("To Delete")))
 	createReq.Header.Set(sessionHeader, session)
 	createRec := httptest.NewRecorder()
 	mux.ServeHTTP(createRec, createReq)
@@ -117,7 +117,7 @@ func TestDeleteZoneRemovesIt(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	delReq := httptest.NewRequest(http.MethodDelete, "/zones/"+created.ID, nil)
+	delReq := httptest.NewRequest(http.MethodDelete, "/api/v1/zones/"+created.ID, nil)
 	delReq.Header.Set(sessionHeader, session)
 	delRec := httptest.NewRecorder()
 	mux.ServeHTTP(delRec, delReq)
@@ -125,7 +125,7 @@ func TestDeleteZoneRemovesIt(t *testing.T) {
 		t.Fatalf("delete status = %d, want %d, body = %s", delRec.Code, http.StatusNoContent, delRec.Body.String())
 	}
 
-	delAgainReq := httptest.NewRequest(http.MethodDelete, "/zones/"+created.ID, nil)
+	delAgainReq := httptest.NewRequest(http.MethodDelete, "/api/v1/zones/"+created.ID, nil)
 	delAgainReq.Header.Set(sessionHeader, session)
 	delAgainRec := httptest.NewRecorder()
 	mux.ServeHTTP(delAgainRec, delAgainReq)
@@ -138,7 +138,7 @@ func TestDeleteZoneRejectsWrongSession(t *testing.T) {
 	mux := testZonesRouter(t)
 	session := fmt.Sprintf("session-%s", t.Name())
 
-	createReq := httptest.NewRequest(http.MethodPost, "/zones", bytes.NewReader(validPolygonBody("Owned")))
+	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/zones", bytes.NewReader(validPolygonBody("Owned")))
 	createReq.Header.Set(sessionHeader, session)
 	createRec := httptest.NewRecorder()
 	mux.ServeHTTP(createRec, createReq)
@@ -148,7 +148,7 @@ func TestDeleteZoneRejectsWrongSession(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	delReq := httptest.NewRequest(http.MethodDelete, "/zones/"+created.ID, nil)
+	delReq := httptest.NewRequest(http.MethodDelete, "/api/v1/zones/"+created.ID, nil)
 	delReq.Header.Set(sessionHeader, "a-different-session")
 	delRec := httptest.NewRecorder()
 	mux.ServeHTTP(delRec, delReq)

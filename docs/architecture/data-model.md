@@ -82,7 +82,29 @@ flight_history (
 | `flight:{icao24}` | Hash | Current `FlightState` fields, TTL-expired when no longer tracked |
 | `flights:geo` | Geo set | `icao24` → `(lon, lat)` for `GEOSEARCH` bbox/radius queries |
 | `cache:{query-hash}` | String (JSON) | Short-TTL cached API response |
-| `ratelimit:{api-key}` | String/counter | Token-bucket rate-limit state |
+| `ratelimit:ip:{ip}` | Hash (`tokens`, `ts`) | Anonymous-tier token-bucket state, keyed by client IP |
+| `ratelimit:key:{api-key-id}` | Hash (`tokens`, `ts`) | Elevated-tier token-bucket state, keyed by `api_keys.id` |
+
+## API authentication & rate limiting
+Public API v1 (`/api/v1`, see [`backend.md`](../tech-stack/backend.md)) has two tiers:
+
+- **Anonymous** (no `X-API-Key` header): rate-limited per client IP, generous default limits for casual use.
+- **Elevated** (valid `X-API-Key` header): rate-limited per key at a higher budget.
+
+Both tiers share one mechanism — a Redis-backed token bucket (see the `ratelimit:*` keys above), implemented as a single atomic Lua script so it stays correct across multiple `apigateway` replicas (per [`backend.md`](../tech-stack/backend.md)'s "in Redis so it works across multiple gateway instances"). An exhausted bucket gets a `429` with a `Retry-After` header.
+
+```
+api_keys (durable, Postgres) {
+  id: uuid
+  key_hash: string      // SHA-256 hex digest of the raw key; the raw key itself is never stored
+  label: string          // human-readable identifier, e.g. "frontend" or a contributor's name
+  tier: enum (anonymous, elevated)
+  created_at: timestamp
+  revoked_at: timestamp | null   // non-null keys are treated as not found
+}
+```
+
+Keys are issued out-of-band via `cmd/apigateway -issue-key -tier=elevated -label=<label>` (prints the raw key once; only its hash is persisted) — there is no public key-issuance endpoint, since the API has no account system to authorize who may mint one (see the [master PRD](../prd/00-master-prd.md)'s "no user accounts" scope decision).
 
 ## NATS payloads
 `ingest.raw.<provider>` carries the provider's raw payload shape (not normalized) — see each provider's doc in [`../api-docs/`](../api-docs/README.md). `flights.updates` and `events.detected` carry the canonical `FlightState` and `Event` shapes above, serialized as JSON (kept human-debuggable; revisit to a binary format only if profiling shows serialization cost is actually a bottleneck — don't pre-optimize this).

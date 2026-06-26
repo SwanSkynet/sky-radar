@@ -99,7 +99,7 @@ func testReplayAPI(t *testing.T) (api *replayAPI, pub *natsutil.FlightStatePubli
 func doGetReplay(t *testing.T, api *replayAPI, query string) *httptest.ResponseRecorder {
 	t.Helper()
 	mux := newRouter(&flightsAPI{logger: api.logger}, nil, api)
-	req := httptest.NewRequest(http.MethodGet, "/replay"+query, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/replay"+query, nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	return rec

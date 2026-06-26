@@ -1,0 +1,508 @@
+openapi: 3.0.3
+info:
+  title: Sky Radar Public API
+  version: "1.0.0"
+  description: >
+    Sky Radar's public read API for live aircraft state, detected events,
+    historical replay, and session-scoped zones/watchlists. Field shapes
+    mirror docs/architecture/data-model.md exactly; that document is the
+    authoritative schema reference, this file is its OpenAPI projection.
+    Anonymous requests are rate-limited per client IP; requests bearing a
+    valid X-API-Key are rate-limited per key at a higher tier limit. See
+    docs/architecture/data-model.md's "API authentication & rate limiting"
+    section.
+servers:
+  - url: /api/v1
+security:
+  - {}
+  - ApiKeyAuth: []
+paths:
+  /flights:
+    get:
+      summary: List currently tracked aircraft within a bounding box
+      parameters:
+        - name: bbox
+          in: query
+          required: true
+          description: "minLon,minLat,maxLon,maxLat"
+          schema:
+            type: string
+        - name: callsign
+          in: query
+          schema:
+            type: string
+        - name: registration
+          in: query
+          schema:
+            type: string
+        - name: icao24
+          in: query
+          schema:
+            type: string
+        - name: min_altitude_ft
+          in: query
+          schema:
+            type: integer
+        - name: max_altitude_ft
+          in: query
+          schema:
+            type: integer
+        - name: min_speed_kt
+          in: query
+          schema:
+            type: number
+        - name: max_speed_kt
+          in: query
+          schema:
+            type: number
+      responses:
+        "200":
+          description: Aircraft matching the bbox and any optional filters
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/FlightState"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+  /flights/{icao24}:
+    get:
+      summary: Get a single tracked aircraft by its ICAO24 transponder address
+      parameters:
+        - name: icao24
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The aircraft's current state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FlightState"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+  /events:
+    get:
+      summary: List detected events
+      parameters:
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [altitude_delta, speed_delta, stale_signal, geofence_enter, geofence_exit, watchlist_match]
+        - name: icao24
+          in: query
+          schema:
+            type: string
+        - name: severity
+          in: query
+          schema:
+            type: string
+            enum: [info, notable, warning]
+        - name: since
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Events matching the given filters
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Event"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+  /replay:
+    get:
+      summary: Reconstruct recent aircraft movement over a time window
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+        - name: bbox
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Time-ascending samples covering [from, to]
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/FlightHistorySample"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+  /zones:
+    get:
+      summary: List the requesting session's geofences
+      parameters:
+        - $ref: "#/components/parameters/SessionHeader"
+      responses:
+        "200":
+          description: The session's zones
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Zone"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+    post:
+      summary: Create a session-scoped geofence
+      parameters:
+        - $ref: "#/components/parameters/SessionHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, polygon]
+              properties:
+                name:
+                  type: string
+                polygon:
+                  $ref: "#/components/schemas/GeoJSONPolygon"
+      responses:
+        "201":
+          description: The created zone
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Zone"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+  /zones/{id}:
+    delete:
+      summary: Delete a session-scoped geofence
+      parameters:
+        - $ref: "#/components/parameters/SessionHeader"
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+  /watchlist:
+    get:
+      summary: List the requesting session's watchlist entries
+      parameters:
+        - $ref: "#/components/parameters/SessionHeader"
+      responses:
+        "200":
+          description: The session's watchlist entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WatchlistEntry"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+    post:
+      summary: Add an aircraft to the requesting session's watchlist
+      parameters:
+        - $ref: "#/components/parameters/SessionHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [icao24, label]
+              properties:
+                icao24:
+                  type: string
+                label:
+                  type: string
+      responses:
+        "201":
+          description: The created watchlist entry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WatchlistEntry"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+  /watchlist/{id}:
+    delete:
+      summary: Remove a watchlist entry
+      parameters:
+        - $ref: "#/components/parameters/SessionHeader"
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+components:
+  parameters:
+    SessionHeader:
+      name: X-Session-ID
+      in: header
+      required: true
+      schema:
+        type: string
+  responses:
+    BadRequest:
+      description: Malformed request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: Invalid or revoked API key
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    TooManyRequests:
+      description: Rate limit exceeded for the caller's tier
+      headers:
+        Retry-After:
+          description: Seconds until the next token is available
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+    FlightState:
+      type: object
+      required:
+        - icao24
+        - lat
+        - lon
+        - on_ground
+        - sources
+        - position_quality
+        - last_seen_utc
+        - stale
+      properties:
+        icao24:
+          type: string
+        callsign:
+          type: string
+          nullable: true
+        registration:
+          type: string
+          nullable: true
+        lat:
+          type: number
+        lon:
+          type: number
+        altitude_baro_ft:
+          type: integer
+          nullable: true
+        altitude_geo_ft:
+          type: integer
+          nullable: true
+        ground_speed_kt:
+          type: number
+          nullable: true
+        vertical_rate_fpm:
+          type: number
+          nullable: true
+        heading_deg:
+          type: number
+          nullable: true
+        on_ground:
+          type: boolean
+        squawk:
+          type: string
+          nullable: true
+        sources:
+          type: array
+          items:
+            type: string
+        position_quality:
+          type: string
+          enum: [adsb, mlat, estimated]
+        last_seen_utc:
+          type: string
+          format: date-time
+        stale:
+          type: boolean
+    Event:
+      type: object
+      required: [id, type, icao24, severity, occurred_at_utc]
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [altitude_delta, speed_delta, stale_signal, geofence_enter, geofence_exit, watchlist_match]
+        icao24:
+          type: string
+        severity:
+          type: string
+          enum: [info, notable, warning]
+        occurred_at_utc:
+          type: string
+          format: date-time
+        detail:
+          nullable: true
+          description: Type-specific payload; null for event types that carry none.
+    GeoJSONPolygon:
+      type: object
+      required: [type, coordinates]
+      properties:
+        type:
+          type: string
+          enum: [Polygon]
+        coordinates:
+          type: array
+          items:
+            type: array
+            items:
+              type: array
+              items:
+                type: number
+    Zone:
+      type: object
+      required: [id, name, polygon, created_by_session, created_at]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        polygon:
+          $ref: "#/components/schemas/GeoJSONPolygon"
+        created_by_session:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    WatchlistEntry:
+      type: object
+      required: [id, icao24, label, created_by_session, created_at]
+      properties:
+        id:
+          type: string
+        icao24:
+          type: string
+        label:
+          type: string
+        created_by_session:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    FlightHistorySample:
+      type: object
+      required: [icao24, recorded_at, lat, lon, on_ground]
+      properties:
+        icao24:
+          type: string
+        recorded_at:
+          type: string
+          format: date-time
+        lat:
+          type: number
+        lon:
+          type: number
+        altitude_baro_ft:
+          type: integer
+          nullable: true
+        ground_speed_kt:
+          type: number
+          nullable: true
+        heading_deg:
+          type: number
+          nullable: true
+        on_ground:
+          type: boolean
