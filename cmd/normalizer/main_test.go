@@ -11,10 +11,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SwanSkynet/sky-radar/internal/flightmodel"
 	"github.com/SwanSkynet/sky-radar/internal/health"
+	"github.com/SwanSkynet/sky-radar/internal/natsutil"
 	"github.com/SwanSkynet/sky-radar/internal/redisutil"
 	"github.com/SwanSkynet/sky-radar/internal/sourceadapter"
 	"github.com/alicebob/miniredis/v2"
+	"github.com/nats-io/nats-server/v2/server"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -56,8 +59,54 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
+// testPublisher boots an in-process NATS server with JetStream enabled,
+// ensures the flights.updates stream exists, and returns a publisher plus
+// a subscriber for asserting what runMergeLoop actually published.
+func testPublisher(t *testing.T) (*natsutil.FlightStatePublisher, *natsutil.FlightStateSubscriber) {
+	t.Helper()
+
+	srv, err := server.NewServer(&server.Options{
+		Host:      "127.0.0.1",
+		Port:      -1,
+		JetStream: true,
+		StoreDir:  t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("server.NewServer: %v", err)
+	}
+	srv.Start()
+	t.Cleanup(srv.Shutdown)
+	if !srv.ReadyForConnections(5 * time.Second) {
+		t.Fatal("nats test server: not ready for connections")
+	}
+
+	nc, err := natsutil.Connect(srv.ClientURL())
+	if err != nil {
+		t.Fatalf("natsutil.Connect: %v", err)
+	}
+	t.Cleanup(nc.Close)
+
+	js, err := natsutil.JetStream(nc)
+	if err != nil {
+		t.Fatalf("natsutil.JetStream: %v", err)
+	}
+
+	ctx := context.Background()
+	if _, err := natsutil.EnsureFlightsUpdatesStream(ctx, js); err != nil {
+		t.Fatalf("EnsureFlightsUpdatesStream: %v", err)
+	}
+
+	sub, err := natsutil.NewFlightStateSubscriber(ctx, js, "test-consumer")
+	if err != nil {
+		t.Fatalf("NewFlightStateSubscriber: %v", err)
+	}
+
+	return natsutil.NewFlightStatePublisher(js), sub
+}
+
 func TestRunMergeLoopWritesFlightStateToRedis(t *testing.T) {
 	redisClient := testRedisClient(t)
+	publisher, _ := testPublisher(t)
 	ctx0 := context.Background()
 
 	now := time.Now().UTC()
@@ -77,7 +126,7 @@ func TestRunMergeLoopWritesFlightStateToRedis(t *testing.T) {
 	ctx, cancel := context.WithTimeout(ctx0, 20*time.Millisecond)
 	defer cancel()
 
-	runMergeLoop(ctx, testLogger(), redisClient, time.Hour, time.Minute)
+	runMergeLoop(ctx, testLogger(), redisClient, publisher, time.Hour, time.Minute)
 
 	got, err := redisClient.ReadFlightState(context.Background(), "a1b2c3")
 	if err != nil {
@@ -88,13 +137,94 @@ func TestRunMergeLoopWritesFlightStateToRedis(t *testing.T) {
 	}
 }
 
+func TestRunMergeLoopPublishesFlightStateToFlightsUpdates(t *testing.T) {
+	redisClient := testRedisClient(t)
+	publisher, sub := testPublisher(t)
+	ctx0 := context.Background()
+
+	now := time.Now().UTC()
+	raw := sourceadapter.RawState{
+		Provider:  "airplanes.live",
+		ICAO24:    "a1b2c3",
+		FetchedAt: now,
+		Payload:   json.RawMessage(`{"hex":"a1b2c3","flight":"UAL123","lat":37.0,"lon":-122.0,"alt_baro":35000,"type":"adsb_icao"}`),
+	}
+	if err := redisClient.WriteRawState(ctx0, raw, time.Minute); err != nil {
+		t.Fatalf("WriteRawState: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(ctx0, 20*time.Millisecond)
+	defer cancel()
+	runMergeLoop(ctx, testLogger(), redisClient, publisher, time.Hour, time.Minute)
+
+	var got *flightmodel.FlightState
+	done := make(chan struct{})
+	errCh := make(chan error, 1)
+	runCtx, runCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer runCancel()
+
+	go func() {
+		errCh <- sub.Run(runCtx, nil, func(state flightmodel.FlightState) {
+			if got == nil {
+				got = &state
+				close(done)
+			}
+		})
+	}()
+
+	select {
+	case <-done:
+	case err := <-errCh:
+		t.Fatalf("sub.Run: %v", err)
+	case <-time.After(4 * time.Second):
+		t.Fatal("timed out waiting for flights.updates message")
+	}
+
+	if got.ICAO24 != "a1b2c3" {
+		t.Errorf("ICAO24 = %q, want a1b2c3", got.ICAO24)
+	}
+	if got.Callsign == nil || *got.Callsign != "UAL123" {
+		t.Errorf("Callsign = %v, want UAL123", got.Callsign)
+	}
+}
+
+func TestPersistAndPublishSkipsPublishWhenWriteFails(t *testing.T) {
+	redisClient := testRedisClient(t)
+	publisher, sub := testPublisher(t)
+	ctx := context.Background()
+
+	if err := redisClient.Close(); err != nil {
+		t.Fatalf("redisClient.Close: %v", err)
+	}
+
+	state := flightmodel.FlightState{ICAO24: "a1b2c3", LastSeenUTC: time.Now().UTC()}
+	persistAndPublish(ctx, testLogger(), redisClient, publisher, state, time.Minute)
+
+	runCtx, runCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer runCancel()
+	received := make(chan struct{})
+
+	go func() {
+		_ = sub.Run(runCtx, nil, func(flightmodel.FlightState) {
+			close(received)
+		})
+	}()
+
+	select {
+	case <-received:
+		t.Fatal("PublishFlightState was called despite a failed Redis write")
+	case <-runCtx.Done():
+	}
+}
+
 func TestRunMergeLoopWritesNothingWhenNoRawState(t *testing.T) {
 	redisClient := testRedisClient(t)
+	publisher, _ := testPublisher(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 
-	runMergeLoop(ctx, testLogger(), redisClient, time.Hour, time.Minute)
+	runMergeLoop(ctx, testLogger(), redisClient, publisher, time.Hour, time.Minute)
 
 	if _, err := redisClient.ReadFlightState(context.Background(), "a1b2c3"); !errors.Is(err, redis.Nil) {
 		t.Fatalf("ReadFlightState: err = %v, want redis.Nil", err)

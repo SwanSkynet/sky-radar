@@ -10,9 +10,20 @@ services:
       timeout: 2s
       retries: 15
 
-  # NATS JetStream and Postgres are intentionally absent: per
-  # docs/implementation-plan.md, both are introduced in Phase 2 once the
-  # normalizer has a second consumer / durable-write requirement.
+  # Postgres is intentionally still absent: per docs/implementation-plan.md
+  # it lands later in Phase 2 alongside the durable-store writer. NATS
+  # JetStream is introduced here as the first Phase 2 milestone.
+  nats:
+    image: nats:2-alpine
+    command: ["-js", "-m", "8222"]
+    restart: unless-stopped
+    ports:
+      - "4222:4222"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
 
   adapter-opensky:
     build:
@@ -74,8 +85,11 @@ services:
     environment:
       - PORT=8084
       - REDIS_ADDR=redis:6379
+      - NATS_URL=nats://nats:4222
     depends_on:
       redis:
+        condition: service_healthy
+      nats:
         condition: service_healthy
 
   eventengine:
@@ -89,6 +103,10 @@ services:
       - "8085:8085"
     environment:
       - PORT=8085
+      - NATS_URL=nats://nats:4222
+    depends_on:
+      nats:
+        condition: service_healthy
 
   apigateway:
     build:

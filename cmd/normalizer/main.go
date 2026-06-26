@@ -1,5 +1,8 @@
-// Command normalizer merges adapter output into the canonical FlightState
-// and writes current state to Redis. See docs/tech-stack/backend.md.
+// Command normalizer merges adapter output into the canonical FlightState,
+// writes current state to Redis, and publishes each merged update to
+// flights.updates on NATS JetStream so downstream consumers (event engine,
+// durable-store writer, API gateway) can subscribe independently. See
+// docs/tech-stack/backend.md and docs/tech-stack/data-and-messaging.md.
 package main
 
 import (
@@ -12,7 +15,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/SwanSkynet/sky-radar/internal/flightmodel"
 	"github.com/SwanSkynet/sky-radar/internal/health"
+	"github.com/SwanSkynet/sky-radar/internal/natsutil"
 	"github.com/SwanSkynet/sky-radar/internal/redisutil"
 	"github.com/redis/go-redis/v9"
 )
@@ -22,6 +27,7 @@ const (
 	defaultPort = "8084"
 
 	defaultRedisAddr = "localhost:6379"
+	defaultNATSURL   = "nats://localhost:4222"
 
 	// defaultMergeInterval matches the adapters' fastest poll cadence (see
 	// e.g. cmd/adapter-adsblol) so the normalizer doesn't introduce extra
@@ -69,13 +75,31 @@ func main() {
 		os.Exit(1)
 	}
 
+	nc, err := natsutil.Connect(envString("NATS_URL", defaultNATSURL))
+	if err != nil {
+		logger.Error("nats connect failed", "err", err)
+		os.Exit(1)
+	}
+	defer nc.Close()
+
+	js, err := natsutil.JetStream(nc)
+	if err != nil {
+		logger.Error("jetstream context failed", "err", err)
+		os.Exit(1)
+	}
+	if _, err := natsutil.EnsureFlightsUpdatesStream(ctx, js); err != nil {
+		logger.Error("ensure flights.updates stream failed", "err", err)
+		os.Exit(1)
+	}
+	publisher := natsutil.NewFlightStatePublisher(js)
+
 	mux.HandleFunc("GET /healthz", health.Live)
 	mux.HandleFunc("GET /readyz", health.Ready(redisClient))
 
 	mergeInterval := envDuration("MERGE_INTERVAL_SECONDS", defaultMergeInterval)
 	flightStateTTL := envDuration("FLIGHT_STATE_TTL_SECONDS", defaultFlightStateTTL)
 
-	go runMergeLoop(ctx, logger, redisClient, mergeInterval, flightStateTTL)
+	go runMergeLoop(ctx, logger, redisClient, publisher, mergeInterval, flightStateTTL)
 
 	go func() {
 		logger.Info("starting server", "addr", srv.Addr)
@@ -97,12 +121,13 @@ func main() {
 }
 
 // runMergeLoop polls the raw:* keyspace on a fixed interval, merges
-// same-icao24 reports per Merge's precedence rule, and writes the
-// resulting canonical FlightState into Redis hot state until ctx is done.
-// A failed scan or write is logged and skipped rather than stopping the
-// loop, so a transient Redis hiccup doesn't take the normalizer down (see
+// same-icao24 reports per Merge's precedence rule, writes the resulting
+// canonical FlightState into Redis hot state, and publishes it to
+// flights.updates via publisher until ctx is done. A failed scan, write, or
+// publish is logged and skipped rather than stopping the loop, so a
+// transient Redis/NATS hiccup doesn't take the normalizer down (see
 // P1-FR7's bulkhead principle, applied here to the normalizer itself).
-func runMergeLoop(ctx context.Context, logger *slog.Logger, redisClient *redisutil.Client, interval, ttl time.Duration) {
+func runMergeLoop(ctx context.Context, logger *slog.Logger, redisClient *redisutil.Client, publisher *natsutil.FlightStatePublisher, interval, ttl time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -113,9 +138,7 @@ func runMergeLoop(ctx context.Context, logger *slog.Logger, redisClient *redisut
 		} else {
 			states := MergeAll(raws)
 			for _, state := range states {
-				if err := redisClient.WriteFlightState(ctx, state, ttl); err != nil {
-					logger.Error("write flight state failed", "icao24", state.ICAO24, "err", err)
-				}
+				persistAndPublish(ctx, logger, redisClient, publisher, state, ttl)
 			}
 			logger.Info("merge cycle complete", "raw_count", len(raws), "flight_count", len(states))
 		}
@@ -131,6 +154,20 @@ func runMergeLoop(ctx context.Context, logger *slog.Logger, redisClient *redisut
 			return
 		case <-ticker.C:
 		}
+	}
+}
+
+// persistAndPublish writes state to Redis hot state and, only if that
+// write succeeds, publishes it to flights.updates. Publishing after a
+// failed write would let downstream consumers see an update that the
+// /readyz-backing hot state never actually held.
+func persistAndPublish(ctx context.Context, logger *slog.Logger, redisClient *redisutil.Client, publisher *natsutil.FlightStatePublisher, state flightmodel.FlightState, ttl time.Duration) {
+	if err := redisClient.WriteFlightState(ctx, state, ttl); err != nil {
+		logger.Error("write flight state failed", "icao24", state.ICAO24, "err", err)
+		return
+	}
+	if err := publisher.PublishFlightState(ctx, state); err != nil {
+		logger.Error("publish flight state failed", "icao24", state.ICAO24, "err", err)
 	}
 }
 

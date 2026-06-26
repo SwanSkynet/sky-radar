@@ -1,6 +1,7 @@
-// Command eventengine consumes canonical flight updates and emits Events
-// per the configured rule set. See docs/tech-stack/backend.md. Phase 1 does
-// not run this service's rule logic yet; see docs/implementation-plan.md.
+// Command eventengine subscribes to flights.updates on NATS JetStream as an
+// independent downstream consumer. See docs/tech-stack/backend.md. Rule
+// evaluation/event emission is not implemented yet; see
+// docs/implementation-plan.md.
 package main
 
 import (
@@ -11,11 +12,22 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/SwanSkynet/sky-radar/internal/flightmodel"
+	"github.com/SwanSkynet/sky-radar/internal/natsutil"
 )
 
 const (
 	serviceName = "eventengine"
 	defaultPort = "8085"
+
+	defaultNATSURL = "nats://localhost:4222"
+
+	// consumerName is this service's durable JetStream consumer name on
+	// the FLIGHTS_UPDATES stream, distinct from any other subscriber (e.g.
+	// pgstore-writer, apigateway) so each tracks its own delivery position
+	// independently per docs/architecture/system-architecture.md.
+	consumerName = "eventengine"
 )
 
 func healthz(w http.ResponseWriter, r *http.Request) {
@@ -46,6 +58,44 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	nc, err := natsutil.Connect(envString("NATS_URL", defaultNATSURL))
+	if err != nil {
+		logger.Error("nats connect failed", "err", err)
+		os.Exit(1)
+	}
+	defer nc.Close()
+
+	js, err := natsutil.JetStream(nc)
+	if err != nil {
+		logger.Error("jetstream context failed", "err", err)
+		os.Exit(1)
+	}
+	if _, err := natsutil.EnsureFlightsUpdatesStream(ctx, js); err != nil {
+		logger.Error("ensure flights.updates stream failed", "err", err)
+		os.Exit(1)
+	}
+	subscriber, err := natsutil.NewFlightStateSubscriber(ctx, js, consumerName)
+	if err != nil {
+		logger.Error("create flights.updates subscriber failed", "err", err)
+		os.Exit(1)
+	}
+
+	go func() {
+		if err := subscriber.Run(ctx, func(err error) {
+			logger.Error("decode flight state failed", "err", err)
+		}, func(state flightmodel.FlightState) {
+			logFlightUpdate(logger, state)
+		}); err != nil {
+			// Run only returns a non-nil error if the initial consumer
+			// setup fails (it otherwise blocks until ctx is done and
+			// returns nil), so this is a startup-class failure: exit
+			// rather than leave /healthz reporting ok with no subscriber
+			// actually running.
+			logger.Error("flights.updates subscriber stopped", "err", err)
+			os.Exit(1)
+		}
+	}()
+
 	go func() {
 		logger.Info("starting server", "addr", srv.Addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -63,4 +113,22 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.Error("shutdown error", "err", err)
 	}
+}
+
+// logFlightUpdate records receipt of a flights.updates message. It is a
+// placeholder for the rule evaluation described in
+// docs/prd/phase-2-realtime-systems.md, which lands in a later milestone.
+func logFlightUpdate(logger *slog.Logger, state flightmodel.FlightState) {
+	var callsign string
+	if state.Callsign != nil {
+		callsign = *state.Callsign
+	}
+	logger.Info("received flight update", "icao24", state.ICAO24, "callsign", callsign)
+}
+
+func envString(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
