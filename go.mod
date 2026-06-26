@@ -9,6 +9,7 @@ require (
 	github.com/nats-io/nats.go v1.52.0
 	github.com/paulmach/orb v0.13.0
 	github.com/redis/go-redis/v9 v9.21.0
+	nhooyr.io/websocket v1.8.17
 )
 
 require (

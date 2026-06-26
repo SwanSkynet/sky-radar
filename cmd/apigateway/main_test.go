@@ -14,7 +14,7 @@ func TestNewRouterHealthzOKRegardlessOfRedis(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
-	newRouter(api).ServeHTTP(rec, req)
+	newRouter(api, nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -26,7 +26,7 @@ func TestNewRouterReadyzUnavailableWhenRedisUnreachable(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
-	newRouter(api).ServeHTTP(rec, req)
+	newRouter(api, nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)

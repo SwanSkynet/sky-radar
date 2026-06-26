@@ -49,7 +49,7 @@ func TestListFlightsReturnsAircraftInsideBBox(t *testing.T) {
 		}
 	}
 
-	mux := newRouter(api)
+	mux := newRouter(api, nil)
 	req := httptest.NewRequest(http.MethodGet, "/flights?bbox=-123,36,-121,38", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -72,7 +72,7 @@ func TestListFlightsReturnsAircraftInsideBBox(t *testing.T) {
 
 func TestListFlightsRequiresBBoxParam(t *testing.T) {
 	api, _ := testAPI(t)
-	mux := newRouter(api)
+	mux := newRouter(api, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/flights", nil)
 	rec := httptest.NewRecorder()
@@ -85,7 +85,7 @@ func TestListFlightsRequiresBBoxParam(t *testing.T) {
 
 func TestListFlightsRejectsMalformedBBox(t *testing.T) {
 	api, _ := testAPI(t)
-	mux := newRouter(api)
+	mux := newRouter(api, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/flights?bbox=not-a-bbox", nil)
 	rec := httptest.NewRecorder()
@@ -98,7 +98,7 @@ func TestListFlightsRejectsMalformedBBox(t *testing.T) {
 
 func TestListFlightsReturnsEmptyArrayWhenNoneMatch(t *testing.T) {
 	api, _ := testAPI(t)
-	mux := newRouter(api)
+	mux := newRouter(api, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/flights?bbox=-123,36,-121,38", nil)
 	rec := httptest.NewRecorder()
@@ -129,7 +129,7 @@ func TestGetFlightReturnsCurrentState(t *testing.T) {
 		t.Fatalf("WriteFlightState: %v", err)
 	}
 
-	mux := newRouter(api)
+	mux := newRouter(api, nil)
 	req := httptest.NewRequest(http.MethodGet, "/flights/A1B2C3", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -152,7 +152,7 @@ func TestGetFlightReturnsCurrentState(t *testing.T) {
 
 func TestGetFlightReturns404WhenNotTracked(t *testing.T) {
 	api, _ := testAPI(t)
-	mux := newRouter(api)
+	mux := newRouter(api, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/flights/ffffff", nil)
 	rec := httptest.NewRecorder()
@@ -178,7 +178,7 @@ func TestGetFlightMarksStaleAircraftStale(t *testing.T) {
 		t.Fatalf("WriteFlightState: %v", err)
 	}
 
-	mux := newRouter(api)
+	mux := newRouter(api, nil)
 	req := httptest.NewRequest(http.MethodGet, "/flights/a1b2c3", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
