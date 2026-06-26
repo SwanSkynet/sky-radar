@@ -23,6 +23,19 @@ const (
 	// minutes full-resolution)" retention documented for flights.updates in
 	// docs/tech-stack/data-and-messaging.md.
 	flightsUpdatesMaxAge = 30 * time.Minute
+
+	// SubjectEventsDetected is the subject the event engine publishes
+	// detected Events to; see the subject table in
+	// docs/tech-stack/data-and-messaging.md.
+	SubjectEventsDetected = "events.detected"
+
+	// StreamEventsDetected is the JetStream stream backing
+	// SubjectEventsDetected.
+	StreamEventsDetected = "EVENTS_DETECTED"
+
+	// eventsDetectedMaxAge matches the same full replay window retention
+	// as flights.updates, per docs/tech-stack/data-and-messaging.md.
+	eventsDetectedMaxAge = 30 * time.Minute
 )
 
 // Connect dials the NATS server at url. Callers should treat a failure here
@@ -59,6 +72,24 @@ func EnsureFlightsUpdatesStream(ctx context.Context, js jetstream.JetStream) (je
 	})
 	if err != nil {
 		return nil, fmt.Errorf("natsutil: ensure stream %s: %w", StreamFlightsUpdates, err)
+	}
+	return stream, nil
+}
+
+// EnsureEventsDetectedStream creates the EVENTS_DETECTED stream if it does
+// not already exist, or updates it to match if it does. It is idempotent
+// and safe to call from both the producer (event engine) and any consumer
+// at startup, so neither side depends on the other having started first.
+func EnsureEventsDetectedStream(ctx context.Context, js jetstream.JetStream) (jetstream.Stream, error) {
+	stream, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:      StreamEventsDetected,
+		Subjects:  []string{SubjectEventsDetected},
+		Retention: jetstream.LimitsPolicy,
+		MaxAge:    eventsDetectedMaxAge,
+		Storage:   jetstream.FileStorage,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("natsutil: ensure stream %s: %w", StreamEventsDetected, err)
 	}
 	return stream, nil
 }
