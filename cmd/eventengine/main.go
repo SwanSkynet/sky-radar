@@ -2,13 +2,13 @@
 // independent downstream consumer and evaluates each update against the
 // event-detection rule set, publishing detected Events to events.detected.
 // See docs/tech-stack/backend.md. Only the stale-signal, altitude-delta,
-// and speed-delta rules are implemented so far; the remaining rules
-// (geofence, watchlist) land in later milestones, see
-// docs/implementation-plan.md.
+// speed-delta, and geofence rules are implemented so far; watchlist match
+// lands in a later milestone, see docs/implementation-plan.md.
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
@@ -67,6 +67,13 @@ const (
 	// reading rather than routine acceleration/deceleration.
 	defaultSpeedWarningThresholdKt = 250
 )
+
+// geofenceZonesEnvVar names the env var holding the JSON-encoded
+// []flightmodel.Zone the geofence detector evaluates against. Loading
+// zones from Postgres is durable-store wiring deferred to a later
+// milestone (see docs/implementation-plan.md); this env var is the
+// smallest input the engine needs to run the rule in the meantime.
+const geofenceZonesEnvVar = "GEOFENCE_ZONES_JSON"
 
 func healthz(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
@@ -133,6 +140,12 @@ func main() {
 		envFloat(logger, "SPEED_DELTA_THRESHOLD_KT", defaultSpeedDeltaThresholdKt),
 		envFloat(logger, "SPEED_WARNING_THRESHOLD_KT", defaultSpeedWarningThresholdKt),
 	)
+	zones, err := envZones(geofenceZonesEnvVar)
+	if err != nil {
+		logger.Error("invalid zones JSON env var", "key", geofenceZonesEnvVar, "err", err)
+		os.Exit(1)
+	}
+	geofenceDetector := NewGeofenceDetector(zones)
 
 	go func() {
 		if err := subscriber.Run(ctx, func(err error) {
@@ -148,6 +161,13 @@ func main() {
 				}
 			}
 			if event, ok := speedDetector.Observe(state); ok {
+				if err := eventPublisher.PublishEvent(ctx, event); err != nil {
+					logger.Error("publish event failed", "icao24", event.ICAO24, "type", event.Type, "err", err)
+				} else {
+					logger.Info("event detected", "icao24", event.ICAO24, "type", event.Type)
+				}
+			}
+			for _, event := range geofenceDetector.Observe(state) {
 				if err := eventPublisher.PublishEvent(ctx, event); err != nil {
 					logger.Error("publish event failed", "icao24", event.ICAO24, "type", event.Type, "err", err)
 				} else {
@@ -172,7 +192,7 @@ func main() {
 	// multiples of the stale threshold, well past the point it would
 	// already be flagged stale.
 	speedBaselineEvictAfter := staleThreshold * evictAfterMultiple
-	go runStaleSweepLoop(ctx, logger, staleDetector, speedDetector, eventPublisher, staleSweepInterval, speedBaselineEvictAfter)
+	go runStaleSweepLoop(ctx, logger, staleDetector, speedDetector, geofenceDetector, eventPublisher, staleSweepInterval, speedBaselineEvictAfter)
 
 	go func() {
 		logger.Info("starting server", "addr", srv.Addr)
@@ -210,11 +230,11 @@ func logFlightUpdate(logger *slog.Logger, state flightmodel.FlightState) {
 // events.detected until ctx is done. A failed publish is logged and
 // skipped rather than stopping the loop, mirroring the normalizer's
 // bulkhead handling of transient NATS hiccups (cmd/normalizer/main.go). It
-// also evicts speedDetector's per-aircraft baselines once an aircraft has
-// been silent for speedBaselineEvictAfter, bounding that detector's memory
-// growth for aircraft that have gone away rather than tracking them for
-// the life of the process.
-func runStaleSweepLoop(ctx context.Context, logger *slog.Logger, detector *StaleSignalDetector, speedDetector *SpeedDeltaDetector, publisher *natsutil.EventPublisher, interval, speedBaselineEvictAfter time.Duration) {
+// also evicts speedDetector's and geofenceDetector's per-aircraft state
+// once an aircraft has been silent for speedBaselineEvictAfter, bounding
+// those detectors' memory growth for aircraft that have gone away rather
+// than tracking them for the life of the process.
+func runStaleSweepLoop(ctx context.Context, logger *slog.Logger, detector *StaleSignalDetector, speedDetector *SpeedDeltaDetector, geofenceDetector *GeofenceDetector, publisher *natsutil.EventPublisher, interval, speedBaselineEvictAfter time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -234,6 +254,7 @@ func runStaleSweepLoop(ctx context.Context, logger *slog.Logger, detector *Stale
 			logger.Info("event detected", "icao24", event.ICAO24, "type", event.Type)
 		}
 		speedDetector.EvictBefore(now.Add(-speedBaselineEvictAfter))
+		geofenceDetector.EvictBefore(now.Add(-speedBaselineEvictAfter))
 	}
 }
 
@@ -268,6 +289,25 @@ func envFloat(logger *slog.Logger, key string, fallback float64) float64 {
 		return fallback
 	}
 	return n
+}
+
+// envZones parses key as a JSON array of flightmodel.Zone, returning nil
+// (no zones, geofence detection becomes a no-op) if the env var is unset.
+// Malformed JSON is a startup-class failure rather than a silent fallback
+// to no zones: with zones still env-sourced (durable Postgres storage is
+// out of scope for this milestone, see docs/implementation-plan.md),
+// silently ignoring a bad value would leave /healthz reporting ok while the
+// configured zone source is actually broken.
+func envZones(key string) ([]flightmodel.Zone, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return nil, nil
+	}
+	var zones []flightmodel.Zone
+	if err := json.Unmarshal([]byte(v), &zones); err != nil {
+		return nil, err
+	}
+	return zones, nil
 }
 
 func envDuration(logger *slog.Logger, key string, fallback time.Duration) time.Duration {

@@ -42,6 +42,45 @@ func TestEnvStringFallsBackWhenUnset(t *testing.T) {
 	}
 }
 
+func TestEnvZonesUnsetReturnsNilNoError(t *testing.T) {
+	const key = "EVENTENGINE_TEST_ZONES_UNSET"
+	t.Setenv(key, "")
+
+	zones, err := envZones(key)
+	if err != nil {
+		t.Fatalf("envZones: unexpected error %v", err)
+	}
+	if zones != nil {
+		t.Errorf("zones = %v, want nil", zones)
+	}
+}
+
+func TestEnvZonesValidJSONParses(t *testing.T) {
+	const key = "EVENTENGINE_TEST_ZONES_VALID"
+	t.Setenv(key, `[{"id":"z1","name":"Zone One","polygon":{"type":"Polygon","coordinates":[[[-122.5,37.5],[-122.0,37.5],[-122.0,38.0],[-122.5,38.0],[-122.5,37.5]]]}}]`)
+
+	zones, err := envZones(key)
+	if err != nil {
+		t.Fatalf("envZones: unexpected error %v", err)
+	}
+	if len(zones) != 1 || zones[0].ID != "z1" {
+		t.Errorf("zones = %+v, want a single zone z1", zones)
+	}
+}
+
+func TestEnvZonesMalformedJSONReturnsError(t *testing.T) {
+	const key = "EVENTENGINE_TEST_ZONES_MALFORMED"
+	t.Setenv(key, `not valid json`)
+
+	zones, err := envZones(key)
+	if err == nil {
+		t.Fatal("envZones: want error for malformed JSON, got nil")
+	}
+	if zones != nil {
+		t.Errorf("zones = %v, want nil on error", zones)
+	}
+}
+
 func TestLogFlightUpdateDoesNotPanic(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	callsign := "UAL123"

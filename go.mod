@@ -6,6 +6,7 @@ require (
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/nats-io/nats-server/v2 v2.14.2
 	github.com/nats-io/nats.go v1.52.0
+	github.com/paulmach/orb v0.13.0
 	github.com/redis/go-redis/v9 v9.21.0
 )
 
