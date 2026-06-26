@@ -186,11 +186,13 @@ jobs:
             mkdir -p /root/sky-radar/deploy
             cd /root/sky-radar/deploy
             
-            # Create/overwrite the production .env file with explicit Postgres values from secrets
+            # Create/overwrite the production .env file with explicit values from secrets
             cat << 'EOF' | sed 's/^[ \t]*//' > .env
-            POSTGRES_USER=${{ coalesce(secrets.POSTGRES_USER, 'postgres') }}
+            POSTGRES_USER=${{ secrets.POSTGRES_USER || 'postgres' }}
             POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
-            POSTGRES_DB=${{ coalesce(secrets.POSTGRES_DB, 'postgres') }}
+            POSTGRES_DB=${{ secrets.POSTGRES_DB || 'postgres' }}
+            OPENSKY_CLIENT_ID=${{ secrets.OPENSKY_CLIENT_ID }}
+            OPENSKY_CLIENT_SECRET=${{ secrets.OPENSKY_CLIENT_SECRET }}
             EOF
             
             # Login to GitHub Container Registry

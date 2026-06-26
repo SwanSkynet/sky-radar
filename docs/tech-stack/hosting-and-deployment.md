@@ -97,6 +97,8 @@ In your GitHub Repository, go to **Settings > Secrets and variables > Actions** 
 * `POSTGRES_PASSWORD`: The password for the production PostgreSQL database.
 * `POSTGRES_USER`: (Optional) The username for the PostgreSQL database (defaults to `postgres`).
 * `POSTGRES_DB`: (Optional) The database name for the PostgreSQL database (defaults to `postgres`).
+* `OPENSKY_CLIENT_ID`: OAuth2 client ID for the OpenSky Network API, used by `adapter-opensky`.
+* `OPENSKY_CLIENT_SECRET`: OAuth2 client secret for the OpenSky Network API, used by `adapter-opensky`.
 
 ### 3. DNS Configuration
 Point your domain (e.g., `skyradar.swanathiyarath.com`) to the Droplet's IP address. Caddy will detect the request, secure a Let's Encrypt certificate, and handle HTTPS traffic automatically.
