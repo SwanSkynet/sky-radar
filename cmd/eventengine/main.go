@@ -1,9 +1,9 @@
 // Command eventengine subscribes to flights.updates on NATS JetStream as an
 // independent downstream consumer and evaluates each update against the
 // event-detection rule set, publishing detected Events to events.detected.
-// See docs/tech-stack/backend.md. Only the stale-signal rule is implemented
-// so far; the remaining rules (altitude/speed delta, geofence, watchlist)
-// land in later milestones, see docs/implementation-plan.md.
+// See docs/tech-stack/backend.md. Only the stale-signal and altitude-delta
+// rules are implemented so far; the remaining rules (speed delta, geofence,
+// watchlist) land in later milestones, see docs/implementation-plan.md.
 package main
 
 import (
@@ -40,6 +40,19 @@ const (
 	// defaultStaleSweepInterval keeps stale-signal detection latency well
 	// within the Phase 2 P95 ≤ 5s event-detection budget (master PRD SLO).
 	defaultStaleSweepInterval = 5 * time.Second
+
+	// defaultAltitudeDeltaThresholdFt is the minimum |delta| between two
+	// consecutive barometric-altitude readings for the same aircraft that
+	// counts as a notable altitude change. 1000ft matches standard IFR
+	// altitude separation, so an unexpected jump of at least that much
+	// between reports is worth surfacing.
+	defaultAltitudeDeltaThresholdFt = 1000
+
+	// defaultAltitudeWarningThresholdFt escalates an altitude_delta event
+	// to EventSeverityWarning once the jump triples the notable
+	// threshold — large enough to suggest a rapid descent/climb or a bad
+	// reading rather than a routine step climb/descent.
+	defaultAltitudeWarningThresholdFt = 3000
 )
 
 func healthz(w http.ResponseWriter, r *http.Request) {
@@ -98,6 +111,10 @@ func main() {
 	eventPublisher := natsutil.NewEventPublisher(js)
 
 	staleDetector := NewStaleSignalDetector(envDuration(logger, "STALE_THRESHOLD_SECONDS", defaultStaleThreshold))
+	altitudeDetector := NewAltitudeDeltaDetector(
+		envInt(logger, "ALTITUDE_DELTA_THRESHOLD_FT", defaultAltitudeDeltaThresholdFt),
+		envInt(logger, "ALTITUDE_WARNING_THRESHOLD_FT", defaultAltitudeWarningThresholdFt),
+	)
 
 	go func() {
 		if err := subscriber.Run(ctx, func(err error) {
@@ -105,6 +122,13 @@ func main() {
 		}, func(state flightmodel.FlightState) {
 			logFlightUpdate(logger, state)
 			staleDetector.Observe(state)
+			if event, ok := altitudeDetector.Observe(state); ok {
+				if err := eventPublisher.PublishEvent(ctx, event); err != nil {
+					logger.Error("publish event failed", "icao24", event.ICAO24, "type", event.Type, "err", err)
+				} else {
+					logger.Info("event detected", "icao24", event.ICAO24, "type", event.Type)
+				}
+			}
 		}); err != nil {
 			// Run only returns a non-nil error if the initial consumer
 			// setup fails (it otherwise blocks until ctx is done and
@@ -140,8 +164,8 @@ func main() {
 
 // logFlightUpdate records receipt of a flights.updates message. Rule
 // evaluation that needs more than a single update in isolation (e.g. the
-// altitude/speed delta rules, not yet implemented) will hang off this same
-// callback once they land.
+// altitude-delta rule, evaluated inline in the subscriber callback above;
+// the speed-delta rule not yet implemented) hangs off this same callback.
 func logFlightUpdate(logger *slog.Logger, state flightmodel.FlightState) {
 	var callsign string
 	if state.Callsign != nil {
@@ -181,6 +205,19 @@ func envString(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func envInt(logger *slog.Logger, key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		logger.Warn("invalid integer env var, using default", "key", key, "value", v, "default", fallback)
+		return fallback
+	}
+	return n
 }
 
 func envDuration(logger *slog.Logger, key string, fallback time.Duration) time.Duration {
