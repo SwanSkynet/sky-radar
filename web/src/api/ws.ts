@@ -98,6 +98,11 @@ export class FlightSocket {
           }
           break;
         case "resume_failed":
+          // The gateway couldn't replay the gap, so the sequence we were
+          // tracking is no longer a valid resume point — clear it before
+          // the caller's reload fallback runs, otherwise the next
+          // reconnect would retry the same dead resume_from_seq.
+          this.lastSeq = undefined;
           this.handlers.onResumeFailed(msg.reason ?? "resume failed");
           break;
       }

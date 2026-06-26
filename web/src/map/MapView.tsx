@@ -105,13 +105,21 @@ export function MapView() {
     map.addControl(overlay as unknown as maplibregl.IControl);
 
     let socket: FlightSocket | null = null;
+    let reloadAbort: AbortController | null = null;
 
     const reloadFromREST = () => {
       const bbox = clampBBox(map.getBounds());
       if (!bbox) return;
-      fetchFlightsByBBox(bbox)
-        .then((data) => setFlights(data))
+      reloadAbort?.abort();
+      const abort = new AbortController();
+      reloadAbort = abort;
+      fetchFlightsByBBox(bbox, abort.signal)
+        .then((data) => {
+          if (abort.signal.aborted) return;
+          setFlights(data);
+        })
         .catch((err: unknown) => {
+          if (abort.signal.aborted) return;
           setError(
             err instanceof Error ? err.message : "failed to reload flights",
           );
@@ -121,6 +129,7 @@ export function MapView() {
     const resubscribe = () => {
       const bbox = clampBBox(map.getBounds());
       if (!bbox) return;
+      reloadAbort?.abort();
 
       if (socket) {
         socket.updateBBox(bboxToTuple(bbox));
@@ -146,6 +155,7 @@ export function MapView() {
       map.off("load", resubscribe);
       map.off("moveend", resubscribe);
       clearInterval(staleTimer);
+      reloadAbort?.abort();
       socket?.close();
       overlayRef.current = null;
       map.remove();

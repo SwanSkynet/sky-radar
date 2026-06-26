@@ -96,6 +96,28 @@ describe("FlightSocket", () => {
     expect(ws.readyState).not.toBe(FakeWebSocket.CLOSED);
   });
 
+  it("clears the tracked sequence on resume_failed so the next reconnect starts fresh", () => {
+    vi.useFakeTimers();
+    const h = handlers();
+    new FlightSocket([-10, -10, 10, 10], h);
+
+    const ws1 = FakeWebSocket.instances[0];
+    ws1.triggerOpen();
+    ws1.triggerMessage({ type: "subscribed", seq: 7 });
+    ws1.triggerMessage({ type: "resume_failed", reason: "gap too large" });
+
+    ws1.close();
+    vi.advanceTimersByTime(1000);
+
+    const ws2 = FakeWebSocket.instances[1];
+    ws2.triggerOpen();
+
+    expect(JSON.parse(ws2.sent[0])).toEqual({
+      type: "subscribe",
+      bbox: [-10, -10, 10, 10],
+    });
+  });
+
   it("re-subscribes with resume_from_seq after reconnecting", () => {
     vi.useFakeTimers();
     const h = handlers();

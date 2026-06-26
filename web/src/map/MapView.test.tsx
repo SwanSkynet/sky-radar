@@ -3,6 +3,13 @@ import { render, screen, waitFor } from "@testing-library/react";
 import type { FlightSocketHandlers } from "../api/ws";
 import type { FlightState } from "../api/flights";
 
+// vi.mock factories are hoisted above the rest of the module, so the fake
+// map class has to live inside the factory; vi.hoisted lets the test still
+// reach into its instances afterward to manually fire "moveend".
+const { fakeMapInstances } = vi.hoisted(() => ({
+  fakeMapInstances: [] as { emit: (event: string) => void }[],
+}));
+
 // jsdom has no WebGL context, so the real maplibre-gl/@deck.gl/mapbox
 // would throw on construction. Fake just enough of their surface for
 // MapView to mount and drive a (re)subscribe.
@@ -23,6 +30,9 @@ vi.mock("maplibre-gl", () => {
   }
   class FakeMap {
     private handlers: Record<string, (() => void)[]> = {};
+    constructor() {
+      fakeMapInstances.push(this as unknown as { emit: (event: string) => void });
+    }
     on(event: string, handler: () => void) {
       (this.handlers[event] ??= []).push(handler);
       if (event === "load") handler();
@@ -31,6 +41,9 @@ vi.mock("maplibre-gl", () => {
       this.handlers[event] = (this.handlers[event] ?? []).filter(
         (h) => h !== handler,
       );
+    }
+    emit(event: string) {
+      for (const handler of this.handlers[event] ?? []) handler();
     }
     addControl() {}
     getBounds() {
@@ -117,6 +130,7 @@ function sampleFlight(overrides: Partial<FlightState> = {}): FlightState {
 describe("MapView", () => {
   beforeEach(() => {
     fakeSocketInstances.length = 0;
+    fakeMapInstances.length = 0;
     useFlightStore.setState({
       flights: {},
       connectionStatus: "connecting",
@@ -178,5 +192,43 @@ describe("MapView", () => {
     const calledUrl = (fetch as ReturnType<typeof vi.fn>).mock
       .calls[0][0] as string;
     expect(calledUrl).toContain("/flights?bbox=");
+  });
+
+  it("ignores a stale REST reload response once the viewport changes again", async () => {
+    let resolveFetch!: (value: {
+      ok: boolean;
+      json: () => Promise<FlightState[]>;
+    }) => void;
+    let capturedSignal: AbortSignal | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((_url: string, init?: RequestInit) => {
+        capturedSignal = init?.signal as AbortSignal | undefined;
+        return new Promise((resolve) => {
+          resolveFetch = resolve;
+        });
+      }),
+    );
+
+    render(<MapView />);
+    await waitFor(() => expect(fakeSocketInstances.length).toBe(1));
+
+    fakeSocketInstances[0].handlers.onResumeFailed("resume gap too large");
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+
+    // A new viewport update (or unmount) arrives before the stale REST
+    // request resolves; it should be aborted rather than allowed to
+    // overwrite the WebSocket-backed state once it does resolve.
+    fakeMapInstances[0].emit("moveend");
+    expect(capturedSignal?.aborted).toBe(true);
+
+    resolveFetch({
+      ok: true,
+      json: async () => [sampleFlight({ icao24: "stale" })],
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(useFlightStore.getState().flights).toEqual({});
   });
 });
