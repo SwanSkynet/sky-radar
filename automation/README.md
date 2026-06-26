@@ -33,7 +33,10 @@ worker process's memory.
    cd automation
    docker compose up -d
    ```
-   Web UI at `http://localhost:8080`. **Note:** this compose file uses
+   Web UI at `http://localhost:8088` (mapped off Temporal's default 8080 to
+   avoid colliding with the main app's `apigateway`, which also binds host
+   `8080` — see [`docker-compose.yml`](../docker-compose.yml)). **Note:**
+   this compose file uses
    anonymous volumes — `docker compose down` (or recreating containers) wipes
    all workflow history. Use `docker compose stop`/`start` to preserve it.
 
