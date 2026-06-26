@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
+import type { FlightSocketHandlers } from "../api/ws";
+import type { FlightState } from "../api/flights";
 
 // jsdom has no WebGL context, so the real maplibre-gl/@deck.gl/mapbox
 // would throw on construction. Fake just enough of their surface for
-// MapView to mount and drive a poll.
+// MapView to mount and drive a (re)subscribe.
 vi.mock("maplibre-gl", () => {
   class FakeLngLatBounds {
     getWest() {
@@ -20,8 +22,15 @@ vi.mock("maplibre-gl", () => {
     }
   }
   class FakeMap {
+    private handlers: Record<string, (() => void)[]> = {};
     on(event: string, handler: () => void) {
+      (this.handlers[event] ??= []).push(handler);
       if (event === "load") handler();
+    }
+    off(event: string, handler: () => void) {
+      this.handlers[event] = (this.handlers[event] ?? []).filter(
+        (h) => h !== handler,
+      );
     }
     addControl() {}
     getBounds() {
@@ -39,30 +48,133 @@ vi.mock("@deck.gl/mapbox", () => {
   return { MapboxOverlay: FakeMapboxOverlay };
 });
 
+interface FakeFlightSocket {
+  bbox: [number, number, number, number];
+  handlers: FlightSocketHandlers;
+  closed: boolean;
+  updateBBox: (bbox: [number, number, number, number]) => void;
+  close: () => void;
+}
+
+// vi.mock factories are hoisted above the rest of the module, so the fake
+// class has to live inside the factory; vi.hoisted lets the test still
+// reach into its instances afterward.
+const { fakeSocketInstances } = vi.hoisted(() => ({
+  fakeSocketInstances: [] as FakeFlightSocket[],
+}));
+
+vi.mock("../api/ws", () => {
+  class FakeFlightSocket {
+    bbox: [number, number, number, number];
+    handlers: FlightSocketHandlers;
+    closed = false;
+
+    constructor(
+      bbox: [number, number, number, number],
+      handlers: FlightSocketHandlers,
+    ) {
+      this.bbox = bbox;
+      this.handlers = handlers;
+      fakeSocketInstances.push(this);
+    }
+
+    updateBBox(bbox: [number, number, number, number]) {
+      this.bbox = bbox;
+    }
+
+    close() {
+      this.closed = true;
+    }
+  }
+  return { FlightSocket: FakeFlightSocket };
+});
+
 import { MapView } from "./MapView";
+import { useFlightStore } from "../store/useFlightStore";
+
+function sampleFlight(overrides: Partial<FlightState> = {}): FlightState {
+  return {
+    icao24: "abc123",
+    callsign: null,
+    registration: null,
+    lat: 1,
+    lon: 2,
+    altitude_baro_ft: null,
+    altitude_geo_ft: null,
+    ground_speed_kt: null,
+    vertical_rate_fpm: null,
+    heading_deg: null,
+    on_ground: false,
+    squawk: null,
+    sources: [],
+    position_quality: "adsb",
+    last_seen_utc: new Date().toISOString(),
+    stale: false,
+    ...overrides,
+  };
+}
 
 describe("MapView", () => {
   beforeEach(() => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => [],
-      }),
-    );
+    fakeSocketInstances.length = 0;
+    useFlightStore.setState({
+      flights: {},
+      connectionStatus: "connecting",
+      lastUpdated: null,
+      error: null,
+    });
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it("mounts the map and issues a flights request", async () => {
+  it("subscribes over WebSocket with the current viewport bbox, not REST polling", async () => {
     render(<MapView />);
+
+    await waitFor(() => expect(fakeSocketInstances.length).toBe(1));
+    expect(fakeSocketInstances[0].bbox).toEqual([-10, -10, 10, 10]);
+  });
+
+  it("renders an aircraft pushed via a flight_update handler", async () => {
+    render(<MapView />);
+    await waitFor(() => expect(fakeSocketInstances.length).toBe(1));
+
+    fakeSocketInstances[0].handlers.onFlightUpdate(sampleFlight());
+
+    await waitFor(() => {
+      expect(screen.getByText("1 aircraft in view")).toBeInTheDocument();
+    });
+  });
+
+  it("shows a degraded-mode banner while reconnecting, distinct from per-aircraft staleness", async () => {
+    render(<MapView />);
+    await waitFor(() => expect(fakeSocketInstances.length).toBe(1));
+
+    fakeSocketInstances[0].handlers.onStatusChange("reconnecting");
+
+    await waitFor(() => {
+      expect(screen.getByText(/reconnecting/i)).toBeInTheDocument();
+    });
+  });
+
+  it("falls back to a REST reload when the gateway reports a failed resume", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => [sampleFlight({ icao24: "fallback" })],
+      }),
+    );
+
+    render(<MapView />);
+    await waitFor(() => expect(fakeSocketInstances.length).toBe(1));
+
+    fakeSocketInstances[0].handlers.onResumeFailed("resume gap too large");
 
     await waitFor(() => {
       expect(fetch).toHaveBeenCalled();
     });
-
     const calledUrl = (fetch as ReturnType<typeof vi.fn>).mock
       .calls[0][0] as string;
     expect(calledUrl).toContain("/flights?bbox=");
