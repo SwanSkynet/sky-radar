@@ -4,10 +4,12 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -25,6 +27,16 @@ const (
 	defaultRedisAddr   = "localhost:6379"
 	defaultNATSURL     = "nats://localhost:4222"
 	defaultDatabaseURL = "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"
+
+	// defaultAnonymousRateLimitPerMin and defaultElevatedRateLimitPerMin
+	// are the public API v1 tier budgets per
+	// docs/prd/phase-2-realtime-systems.md's "API-key auth for elevated
+	// rate limits, anonymous tier for casual use". Both are overridable
+	// via env vars so they can be tuned without a redeploy of the
+	// rate-limiting logic itself, mirroring the event engine's
+	// configurable-thresholds rule in docs/tech-stack/backend.md.
+	defaultAnonymousRateLimitPerMin = 60
+	defaultElevatedRateLimitPerMin  = 600
 )
 
 // newRouter wires the public REST and WebSocket routes onto a fresh mux.
@@ -33,52 +45,84 @@ const (
 // tests that don't exercise those paths, in which case their routes are
 // simply not registered.
 func newRouter(api *flightsAPI, wsGW *wsGateway, replay *replayAPI) http.Handler {
-	return newRouterWithExtras(api, wsGW, replay, nil, nil, nil)
+	return newRouterWithExtras(api, wsGW, replay, nil, nil, nil, nil)
 }
+
+// apiV1Prefix is the version prefix for every public REST/WebSocket route
+// per docs/prd/phase-2-realtime-systems.md's "Public API v1... versioned
+// (/api/v1)" requirement. /healthz and /readyz stay unversioned: they're
+// infra-level probes, not public API surface, and the openapi schema route
+// is served alongside them unversioned-path-wise for discoverability (see
+// openapiSpecPath in schema.go).
+const apiV1Prefix = "/api/v1"
 
 // newRouterWithExtras is newRouter plus the zones/watchlist/events
 // endpoints, split out so existing tests that only need flightsAPI can
 // keep calling newRouter without constructing a Postgres-backed Store.
-func newRouterWithExtras(api *flightsAPI, wsGW *wsGateway, replay *replayAPI, zones *zonesAPI, watchlist *watchlistAPI, events *eventsAPI) http.Handler {
+// auth wraps every /api/v1 route in per-key/per-IP rate limiting (see
+// auth.go); it may be nil in tests that don't exercise that path, in which
+// case requests reach the handlers unthrottled.
+func newRouterWithExtras(api *flightsAPI, wsGW *wsGateway, replay *replayAPI, zones *zonesAPI, watchlist *watchlistAPI, events *eventsAPI, auth *apiAuth) http.Handler {
+	v1 := http.NewServeMux()
+	v1.HandleFunc("GET /flights", api.listFlights)
+	v1.HandleFunc("GET /flights/{icao24}", api.getFlight)
+	if wsGW != nil {
+		v1.HandleFunc("GET /ws", wsGW.handleWS)
+	}
+	if replay != nil {
+		v1.HandleFunc("GET /replay", replay.getReplay)
+	}
+	if zones != nil {
+		v1.HandleFunc("POST /zones", zones.createZone)
+		v1.HandleFunc("GET /zones", zones.listZones)
+		v1.HandleFunc("DELETE /zones/{id}", zones.deleteZone)
+	}
+	if watchlist != nil {
+		v1.HandleFunc("POST /watchlist", watchlist.createWatchlistEntry)
+		v1.HandleFunc("GET /watchlist", watchlist.listWatchlistEntries)
+		v1.HandleFunc("DELETE /watchlist/{id}", watchlist.deleteWatchlistEntry)
+	}
+	if events != nil {
+		v1.HandleFunc("GET /events", events.listEvents)
+	}
+
+	var v1Handler http.Handler = v1
+	if auth != nil {
+		v1Handler = auth.middleware(v1)
+	}
+
+	var openAPIHandler http.Handler = http.HandlerFunc(serveOpenAPISpec)
+	if auth != nil {
+		openAPIHandler = auth.rateLimitAnonymous(openAPIHandler)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", health.Live)
 	mux.HandleFunc("GET /readyz", health.Ready(api.redis))
-	mux.HandleFunc("GET /flights", api.listFlights)
-	mux.HandleFunc("GET /flights/{icao24}", api.getFlight)
-	if wsGW != nil {
-		mux.HandleFunc("GET /ws", wsGW.handleWS)
-	}
-	if replay != nil {
-		mux.HandleFunc("GET /replay", replay.getReplay)
-	}
-	if zones != nil {
-		mux.HandleFunc("POST /zones", zones.createZone)
-		mux.HandleFunc("GET /zones", zones.listZones)
-		mux.HandleFunc("DELETE /zones/{id}", zones.deleteZone)
-	}
-	if watchlist != nil {
-		mux.HandleFunc("POST /watchlist", watchlist.createWatchlistEntry)
-		mux.HandleFunc("GET /watchlist", watchlist.listWatchlistEntries)
-		mux.HandleFunc("DELETE /watchlist/{id}", watchlist.deleteWatchlistEntry)
-	}
-	if events != nil {
-		mux.HandleFunc("GET /events", events.listEvents)
-	}
+	mux.Handle("GET /api/v1/openapi.yaml", openAPIHandler)
+	mux.Handle(apiV1Prefix+"/", http.StripPrefix(apiV1Prefix, v1Handler))
 	return withCORS(mux)
 }
 
-// withCORS allows any origin to use this anonymous public API (see
+// withCORS allows any origin to use this public API (see
 // docs/prd/phase-1-foundation.md: "anonymous-only, generous limits, since
-// there's no abuse surface yet"), so the frontend dev server (different
-// origin/port) can call it directly without a proxy. POST/DELETE and the
-// X-Session-ID header are allowed for the session-scoped zones/watchlist
-// write endpoints alongside the original read-only GET routes.
+// there's no abuse surface yet" — abuse is now bounded by per-key/per-IP
+// rate limiting instead of by blocking cross-origin access), so the
+// frontend dev server (different origin/port) can call it directly
+// without a proxy. POST/DELETE, X-Session-ID, and apiKeyHeader are allowed
+// alongside the original read-only GET routes.
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
+		// apiAuth.middleware's X-RateLimit-Limit, X-RateLimit-Remaining,
+		// and Retry-After are otherwise invisible to cross-origin
+		// JavaScript (the CORS-safelisted response header set doesn't
+		// include them), which would leave the Vite client unable to
+		// show callers their remaining budget or back off correctly.
+		w.Header().Set("Access-Control-Expose-Headers", "X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After")
 		if r.Method == http.MethodOptions {
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, "+sessionHeader)
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, "+sessionHeader+", "+apiKeyHeader)
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
@@ -87,15 +131,42 @@ func withCORS(next http.Handler) http.Handler {
 }
 
 func main() {
+	issueKeyLabel := flag.String("issue-key", "", "issue a new public API v1 key with this label, print it, and exit without starting the server")
+	issueKeyTier := flag.String("tier", string(tierElevated), "tier for -issue-key: anonymous or elevated")
+	flag.Parse()
+
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", serviceName)
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// Postgres connects first, ahead of Redis/NATS, so -issue-key (an
+	// offline admin operation against the durable api_keys table) can
+	// exit before touching either of them.
+	pg, err := pgstore.Connect(ctx, envString("DATABASE_URL", defaultDatabaseURL))
+	if err != nil {
+		logger.Error("postgres connect failed", "err", err)
+		os.Exit(1)
+	}
+	defer pg.Close()
+
+	if err := pg.Migrate(ctx); err != nil {
+		logger.Error("postgres migrate failed", "err", err)
+		os.Exit(1)
+	}
+
+	if *issueKeyLabel != "" {
+		if _, err := issueAPIKey(ctx, pg, *issueKeyLabel, apiTier(*issueKeyTier)); err != nil {
+			logger.Error("issue api key failed", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = defaultPort
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	redisClient := redisutil.New(&redis.Options{Addr: envString("REDIS_ADDR", defaultRedisAddr)})
 	defer func() {
@@ -111,16 +182,12 @@ func main() {
 
 	api := &flightsAPI{redis: redisClient, logger: logger}
 
-	pg, err := pgstore.Connect(ctx, envString("DATABASE_URL", defaultDatabaseURL))
-	if err != nil {
-		logger.Error("postgres connect failed", "err", err)
-		os.Exit(1)
-	}
-	defer pg.Close()
-
-	if err := pg.Migrate(ctx); err != nil {
-		logger.Error("postgres migrate failed", "err", err)
-		os.Exit(1)
+	auth := &apiAuth{
+		pg:             pg,
+		redis:          redisClient,
+		logger:         logger,
+		anonymousLimit: newTierLimit(envInt("ANONYMOUS_RATE_LIMIT_PER_MIN", defaultAnonymousRateLimitPerMin)),
+		elevatedLimit:  newTierLimit(envInt("ELEVATED_RATE_LIMIT_PER_MIN", defaultElevatedRateLimitPerMin)),
 	}
 
 	nc, err := natsutil.Connect(envString("NATS_URL", defaultNATSURL))
@@ -163,7 +230,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:    ":" + port,
-		Handler: newRouterWithExtras(api, wsGW, replay, zonesH, watchlistH, eventsH),
+		Handler: newRouterWithExtras(api, wsGW, replay, zonesH, watchlistH, eventsH, auth),
 		// ReadTimeout/WriteTimeout are deliberately unset: net/http sets
 		// them as fixed deadlines on the underlying connection before the
 		// handler runs, and Hijack (which GET /ws relies on for the
@@ -200,4 +267,24 @@ func envString(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// envInt reads key as a positive integer, falling back to fallback if it's
+// unset, not a valid integer, or not positive (logged via the
+// package-level default logger would require threading one through; an
+// invalid rate-limit env var is rare enough config error that failing
+// closed to the documented default is simpler and safer than partially
+// wiring a logger just for this). A non-positive value is rejected here
+// too since it would otherwise reach newTierLimit and produce a
+// zero-or-negative-capacity/refill token bucket.
+func envInt(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return fallback
+	}
+	return n
 }

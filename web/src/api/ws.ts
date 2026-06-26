@@ -4,7 +4,7 @@
 // real-time library — the gateway's contract is small enough that a native
 // WebSocket plus backoff covers it.
 
-import { API_BASE_URL } from "./flights";
+import { API_V1_BASE_URL } from "./flights";
 import type { FlightState } from "./flights";
 
 export type ConnectionStatus =
@@ -42,11 +42,11 @@ const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 30_000;
 
 function wsURL(): string {
-  if (API_BASE_URL.startsWith("/")) {
+  if (API_V1_BASE_URL.startsWith("/")) {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    return `${protocol}//${window.location.host}${API_BASE_URL}/ws`;
+    return `${protocol}//${window.location.host}${API_V1_BASE_URL}/ws`;
   }
-  return `${API_BASE_URL.replace(/^http/, "ws")}/ws`;
+  return `${API_V1_BASE_URL.replace(/^http/, "ws")}/ws`;
 }
 
 // FlightSocket owns one logical subscription: it reconnects with backoff

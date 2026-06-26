@@ -18,14 +18,14 @@ func testWatchlistRouter(t *testing.T) http.Handler {
 	pg := testReplayPostgres(t)
 	api, _ := testAPI(t)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return newRouterWithExtras(api, nil, nil, nil, &watchlistAPI{pg: pg, logger: logger}, nil)
+	return newRouterWithExtras(api, nil, nil, nil, &watchlistAPI{pg: pg, logger: logger}, nil, nil)
 }
 
 func TestCreateWatchlistEntryRequiresSessionHeader(t *testing.T) {
 	mux := testWatchlistRouter(t)
 
 	body, _ := json.Marshal(map[string]string{"icao24": "a1b2c3", "label": "Friend's flight"})
-	req := httptest.NewRequest(http.MethodPost, "/watchlist", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/watchlist", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
@@ -38,7 +38,7 @@ func TestCreateWatchlistEntryRequiresICAO24(t *testing.T) {
 	mux := testWatchlistRouter(t)
 
 	body, _ := json.Marshal(map[string]string{"label": "Missing icao24"})
-	req := httptest.NewRequest(http.MethodPost, "/watchlist", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/watchlist", bytes.NewReader(body))
 	req.Header.Set(sessionHeader, "session-1")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -53,7 +53,7 @@ func TestCreateAndListWatchlistEntryRoundTrip(t *testing.T) {
 	session := fmt.Sprintf("session-%s", t.Name())
 
 	body, _ := json.Marshal(map[string]string{"icao24": "A1B2C3", "label": "Friend's flight"})
-	req := httptest.NewRequest(http.MethodPost, "/watchlist", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/watchlist", bytes.NewReader(body))
 	req.Header.Set(sessionHeader, session)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -69,7 +69,7 @@ func TestCreateAndListWatchlistEntryRoundTrip(t *testing.T) {
 		t.Fatalf("created entry = %+v, unexpected (icao24 should be lowercased)", created)
 	}
 
-	listReq := httptest.NewRequest(http.MethodGet, "/watchlist", nil)
+	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/watchlist", nil)
 	listReq.Header.Set(sessionHeader, session)
 	listRec := httptest.NewRecorder()
 	mux.ServeHTTP(listRec, listReq)
@@ -97,7 +97,7 @@ func TestDeleteWatchlistEntryRejectsWrongSession(t *testing.T) {
 	session := fmt.Sprintf("session-%s", t.Name())
 
 	body, _ := json.Marshal(map[string]string{"icao24": "a1b2c3", "label": "Owned"})
-	createReq := httptest.NewRequest(http.MethodPost, "/watchlist", bytes.NewReader(body))
+	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/watchlist", bytes.NewReader(body))
 	createReq.Header.Set(sessionHeader, session)
 	createRec := httptest.NewRecorder()
 	mux.ServeHTTP(createRec, createReq)
@@ -107,7 +107,7 @@ func TestDeleteWatchlistEntryRejectsWrongSession(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	delReq := httptest.NewRequest(http.MethodDelete, "/watchlist/"+created.ID, nil)
+	delReq := httptest.NewRequest(http.MethodDelete, "/api/v1/watchlist/"+created.ID, nil)
 	delReq.Header.Set(sessionHeader, "a-different-session")
 	delRec := httptest.NewRecorder()
 	mux.ServeHTTP(delRec, delReq)
@@ -115,7 +115,7 @@ func TestDeleteWatchlistEntryRejectsWrongSession(t *testing.T) {
 		t.Fatalf("status = %d, want %d (wrong session should not see the entry)", delRec.Code, http.StatusNotFound)
 	}
 
-	delOwnReq := httptest.NewRequest(http.MethodDelete, "/watchlist/"+created.ID, nil)
+	delOwnReq := httptest.NewRequest(http.MethodDelete, "/api/v1/watchlist/"+created.ID, nil)
 	delOwnReq.Header.Set(sessionHeader, session)
 	delOwnRec := httptest.NewRecorder()
 	mux.ServeHTTP(delOwnRec, delOwnReq)

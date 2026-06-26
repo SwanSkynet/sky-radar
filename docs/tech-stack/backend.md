@@ -59,6 +59,7 @@ Each `/cmd` entry is intended to become an independently deployable binary/conta
 - **WebSocket:** `github.com/coder/websocket` (modern, context-aware, no legacy baggage).
 - Subscribes to `flights.updates` once per gateway instance and fans out to connected WebSocket clients, filtering server-side by each client's registered viewport bbox — this is where the "bounded per-connection bandwidth regardless of global traffic" requirement is actually implemented.
 - Owns API-key auth, per-key rate limiting (token bucket, in Redis so it works across multiple gateway instances), and response caching for REST/GraphQL reads.
+- The public REST surface is versioned at `/api/v1` and its OpenAPI schema is published at `GET /api/v1/openapi.yaml`, served from `cmd/apigateway/openapi-v1.yaml` (embedded into the binary) and exercised by contract tests in `cmd/apigateway/contract_test.go`. `openapi-v1.yaml` is an OpenAPI projection of the canonical schema — [`../architecture/data-model.md`](../architecture/data-model.md) remains the authoritative reference, including its "API authentication & rate limiting" section for the tier/auth model. GraphQL schema publication is deferred to a follow-up milestone — no GraphQL layer exists yet.
 
 ## Testing and tooling
 

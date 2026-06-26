@@ -3,7 +3,7 @@
 // of JetStream's retained flights.updates / Postgres flight_history
 // covers each part of it, but always returns this one flat sample shape.
 
-import { API_BASE_URL, bboxToQueryValue } from "./flights";
+import { API_V1_BASE_URL, bboxToQueryValue } from "./flights";
 import type { BBox } from "./flights";
 
 // ReplaySample mirrors internal/pgstore.FlightHistoryRecord's JSON shape,
@@ -35,7 +35,7 @@ export async function fetchReplayWindow(
   });
   if (bbox) params.set("bbox", bboxToQueryValue(bbox));
 
-  const url = `${API_BASE_URL}/replay?${params.toString()}`;
+  const url = `${API_V1_BASE_URL}/replay?${params.toString()}`;
   const res = await fetch(url, { signal });
   if (!res.ok) {
     throw new Error(`GET /replay failed: ${res.status} ${res.statusText}`);

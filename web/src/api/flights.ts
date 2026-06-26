@@ -34,6 +34,14 @@ export interface BBox {
 export const API_BASE_URL: string =
   import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8080";
 
+// API_V1_BASE_URL is the versioned public API root per
+// docs/prd/phase-2-realtime-systems.md's "Public API v1... versioned
+// (/api/v1)" requirement — every REST/WebSocket client in this directory
+// builds its URL from this, not API_BASE_URL directly. API_BASE_URL's
+// trailing slash (if VITE_API_BASE_URL was configured with one) is
+// stripped first so this never doubles up to ".../api/v1".
+export const API_V1_BASE_URL = `${API_BASE_URL.replace(/\/+$/, "")}/api/v1`;
+
 export function bboxToQueryValue(bbox: BBox): string {
   return `${bbox.minLon},${bbox.minLat},${bbox.maxLon},${bbox.maxLat}`;
 }
@@ -45,7 +53,7 @@ export async function fetchFlightsByBBox(
   bbox: BBox,
   signal?: AbortSignal,
 ): Promise<FlightState[]> {
-  const url = `${API_BASE_URL}/flights?bbox=${encodeURIComponent(bboxToQueryValue(bbox))}`;
+  const url = `${API_V1_BASE_URL}/flights?bbox=${encodeURIComponent(bboxToQueryValue(bbox))}`;
   const res = await fetch(url, { signal });
   if (!res.ok) {
     throw new Error(`GET /flights failed: ${res.status} ${res.statusText}`);
