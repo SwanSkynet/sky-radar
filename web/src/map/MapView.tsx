@@ -91,6 +91,7 @@ export function MapView() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const overlayRef = useRef<MapboxOverlay | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
+  const replayAbortRef = useRef<AbortController | null>(null);
 
   const flights = useFlightStore((s) => s.flights);
   const lastUpdated = useFlightStore((s) => s.lastUpdated);
@@ -107,31 +108,52 @@ export function MapView() {
 
   const isReplayActive = useReplayStore((s) => s.isActive);
   const replaySamples = useReplayStore((s) => s.samples);
+  const replaySampleTimesMs = useReplayStore((s) => s.sampleTimesMs);
   const replayScrubMs = useReplayStore((s) => s.scrubMs);
   const startReplayLoading = useReplayStore((s) => s.startLoading);
   const loadReplayWindow = useReplayStore((s) => s.loadWindow);
   const setReplayError = useReplayStore((s) => s.setError);
 
   const replayFlights = useMemo(
-    () => computeFlightsAtTime(replaySamples, replayScrubMs),
-    [replaySamples, replayScrubMs],
+    () =>
+      computeFlightsAtTime(replaySamples, replaySampleTimesMs, replayScrubMs),
+    [replaySamples, replaySampleTimesMs, replayScrubMs],
   );
   const displayedFlights = isReplayActive ? replayFlights : flightList;
 
   const handleStartReplay = () => {
+    replayAbortRef.current?.abort();
+    const abort = new AbortController();
+    replayAbortRef.current = abort;
+
     const bounds = mapRef.current?.getBounds();
     const bbox = bounds ? clampBBox(bounds) : null;
     startReplayLoading();
     const to = new Date();
     const from = new Date(to.getTime() - REPLAY_WINDOW_MS);
-    fetchReplayWindow(from, to, bbox ?? undefined)
-      .then((samples) => loadReplayWindow(samples, from.getTime(), to.getTime()))
+    fetchReplayWindow(from, to, bbox ?? undefined, abort.signal)
+      .then((samples) => {
+        if (abort.signal.aborted) return;
+        loadReplayWindow(samples, from.getTime(), to.getTime());
+      })
       .catch((err: unknown) => {
+        if (abort.signal.aborted) return;
         setReplayError(
           err instanceof Error ? err.message : "failed to load replay window",
         );
       });
   };
+
+  // Exiting replay mode (or starting a fresh load) should discard any
+  // in-flight fetchReplayWindow request, so a slow response from a
+  // previous window can't land after the user has already left replay or
+  // asked for a different one.
+  useEffect(() => {
+    if (!isReplayActive) {
+      replayAbortRef.current?.abort();
+      replayAbortRef.current = null;
+    }
+  }, [isReplayActive]);
 
   useEffect(() => {
     if (!containerRef.current) return;

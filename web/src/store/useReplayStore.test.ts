@@ -24,6 +24,7 @@ describe("useReplayStore", () => {
       isPlaying: false,
       error: null,
       samples: [],
+      sampleTimesMs: [],
       windowStartMs: null,
       windowEndMs: null,
       scrubMs: null,
@@ -50,6 +51,16 @@ describe("useReplayStore", () => {
     expect(state.windowEndMs).toBe(5000);
     expect(state.scrubMs).toBe(1000);
     expect(state.isLoading).toBe(false);
+  });
+
+  it("loadWindow precomputes each sample's recorded_at as epoch ms, parallel to samples", () => {
+    const samples = [
+      sample({ recorded_at: new Date(1000).toISOString() }),
+      sample({ recorded_at: new Date(2000).toISOString() }),
+    ];
+    useReplayStore.getState().loadWindow(samples, 1000, 5000);
+
+    expect(useReplayStore.getState().sampleTimesMs).toEqual([1000, 2000]);
   });
 
   it("setError surfaces the error and clears the loading flag", () => {

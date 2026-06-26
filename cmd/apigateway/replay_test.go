@@ -191,6 +191,65 @@ func TestGetReplayReturnsJetStreamSamplesWithinWindow(t *testing.T) {
 	}
 }
 
+// TestGetReplayStopsFetchingPastWindowAcrossMultipleBatches shrinks
+// replayJetStreamFetchBatch so a handful of published messages span
+// several FetchBacklog batches, then asserts a `to` that cuts off
+// mid-backlog still returns exactly the in-window messages and excludes
+// the ones published after `to` — i.e. chunked fetching doesn't drop
+// in-window messages or leak out-of-window ones across batch boundaries.
+func TestGetReplayStopsFetchingPastWindowAcrossMultipleBatches(t *testing.T) {
+	api, pub, _ := testReplayAPI(t)
+	ctx := context.Background()
+
+	origBatch := replayJetStreamFetchBatch
+	replayJetStreamFetchBatch = 2
+	t.Cleanup(func() { replayJetStreamFetchBatch = origBatch })
+
+	base := time.Now().UnixNano()
+	inWindow := make([]string, 0, 5)
+	for i := 0; i < 5; i++ {
+		icao24 := fmt.Sprintf("w%d%d", base, i)
+		inWindow = append(inWindow, icao24)
+		if err := pub.PublishFlightState(ctx, flightmodel.FlightState{ICAO24: icao24, Lat: 1, Lon: 1, LastSeenUTC: time.Now().UTC()}); err != nil {
+			t.Fatalf("PublishFlightState(in-window %d): %v", i, err)
+		}
+	}
+
+	// `to` gets a couple of seconds of headroom above the in-window
+	// messages (rather than being `time.Now()` at this point) because
+	// RFC3339 — both the wire format here and what GET /replay parses —
+	// has only whole-second resolution, and the in-window publishes above
+	// can land anywhere within the current second.
+	to := time.Now().UTC().Add(2 * time.Second)
+	time.Sleep(2500 * time.Millisecond)
+
+	outsideWindow := fmt.Sprintf("o%d", base)
+	if err := pub.PublishFlightState(ctx, flightmodel.FlightState{ICAO24: outsideWindow, Lat: 2, Lon: 2, LastSeenUTC: time.Now().UTC()}); err != nil {
+		t.Fatalf("PublishFlightState(outside window): %v", err)
+	}
+
+	from := to.Add(-time.Minute).Format(time.RFC3339)
+	toParam := to.Format(time.RFC3339)
+	rec := doGetReplay(t, api, fmt.Sprintf("?from=%s&to=%s", from, toParam))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	got := decodeReplayBody(t, rec)
+	gotICAO24 := make(map[string]bool, len(got))
+	for _, s := range got {
+		gotICAO24[s.ICAO24] = true
+	}
+	for _, icao24 := range inWindow {
+		if !gotICAO24[icao24] {
+			t.Errorf("in-window aircraft %s missing from replay response: %+v", icao24, got)
+		}
+	}
+	if gotICAO24[outsideWindow] {
+		t.Errorf("out-of-window aircraft %s present in replay response: %+v", outsideWindow, got)
+	}
+}
+
 func TestGetReplayFiltersByBBox(t *testing.T) {
 	api, pub, _ := testReplayAPI(t)
 	ctx := context.Background()

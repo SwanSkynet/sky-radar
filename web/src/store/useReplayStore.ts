@@ -10,6 +10,11 @@ interface ReplayStore {
   isPlaying: boolean;
   error: string | null;
   samples: ReplaySample[];
+  // recorded_at parsed to epoch ms once per sample at load time, parallel
+  // to `samples` by index. computeFlightsAtTime runs on every scrub tick
+  // (including every playback frame), so this avoids re-parsing the same
+  // date strings dozens of times per second.
+  sampleTimesMs: number[];
   windowStartMs: number | null;
   windowEndMs: number | null;
   scrubMs: number | null;
@@ -33,6 +38,7 @@ export const useReplayStore = create<ReplayStore>((set) => ({
   isPlaying: false,
   error: null,
   samples: [],
+  sampleTimesMs: [],
   windowStartMs: null,
   windowEndMs: null,
   scrubMs: null,
@@ -42,6 +48,7 @@ export const useReplayStore = create<ReplayStore>((set) => ({
   loadWindow: (samples, windowStartMs, windowEndMs) =>
     set({
       samples,
+      sampleTimesMs: samples.map((s) => new Date(s.recorded_at).getTime()),
       windowStartMs,
       windowEndMs,
       scrubMs: windowStartMs,
@@ -76,7 +83,11 @@ export const useReplayStore = create<ReplayStore>((set) => ({
       if (state.windowStartMs === null || state.windowEndMs === null) {
         return {};
       }
-      if (!state.isPlaying && state.scrubMs !== null && state.scrubMs >= state.windowEndMs) {
+      if (
+        !state.isPlaying &&
+        state.scrubMs !== null &&
+        state.scrubMs >= state.windowEndMs
+      ) {
         // Pressing play after reaching the end restarts from the beginning
         // rather than doing nothing (the head is already clamped at end).
         return { isPlaying: true, scrubMs: state.windowStartMs };
@@ -93,6 +104,7 @@ export const useReplayStore = create<ReplayStore>((set) => ({
       isPlaying: false,
       error: null,
       samples: [],
+      sampleTimesMs: [],
       windowStartMs: null,
       windowEndMs: null,
       scrubMs: null,

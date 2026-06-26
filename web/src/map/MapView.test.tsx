@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import type { FlightSocketHandlers } from "../api/ws";
 import type { FlightState } from "../api/flights";
 
@@ -106,6 +106,7 @@ vi.mock("../api/ws", () => {
 
 import { MapView } from "./MapView";
 import { useFlightStore } from "../store/useFlightStore";
+import { useReplayStore } from "../store/useReplayStore";
 
 function sampleFlight(overrides: Partial<FlightState> = {}): FlightState {
   return {
@@ -138,6 +139,17 @@ describe("MapView", () => {
       connectionStatus: "connecting",
       lastUpdated: null,
       error: null,
+    });
+    useReplayStore.setState({
+      isActive: false,
+      isLoading: false,
+      isPlaying: false,
+      error: null,
+      samples: [],
+      sampleTimesMs: [],
+      windowStartMs: null,
+      windowEndMs: null,
+      scrubMs: null,
     });
   });
 
@@ -232,5 +244,43 @@ describe("MapView", () => {
     await Promise.resolve();
 
     expect(useFlightStore.getState().flights).toEqual({});
+  });
+
+  it("aborts an in-flight replay fetch when the user exits replay mode before it resolves", async () => {
+    let resolveFetch!: (value: {
+      ok: boolean;
+      json: () => Promise<unknown[]>;
+    }) => void;
+    let capturedSignal: AbortSignal | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((_url: string, init?: RequestInit) => {
+        capturedSignal = init?.signal as AbortSignal | undefined;
+        return new Promise((resolve) => {
+          resolveFetch = resolve;
+        });
+      }),
+    );
+
+    render(<MapView />);
+    await waitFor(() => expect(fakeSocketInstances.length).toBe(1));
+
+    fireEvent.click(screen.getByText("replay last 30 min"));
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    expect(capturedSignal?.aborted).toBe(false);
+
+    // The user exits replay before the GET /replay response arrives; the
+    // request should be aborted rather than left to land later and
+    // resurrect replay state the user already dismissed.
+    fireEvent.click(screen.getByText("exit replay"));
+    expect(capturedSignal?.aborted).toBe(true);
+
+    resolveFetch({ ok: true, json: async () => [] });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const state = useReplayStore.getState();
+    expect(state.isActive).toBe(false);
+    expect(state.error).toBeNull();
   });
 });

@@ -22,6 +22,17 @@ import (
 // this large.
 var replayMaxWindow = 2 * time.Hour
 
+// replayJetStreamFetchBatch bounds how many messages
+// collectJetStreamSamples pulls per FetchBacklog call. PendingCount
+// reports everything pending after `from`, which can run well past the
+// requested `to` (the consumer has no upper time bound of its own);
+// fetching that whole backlog in one call would mean decoding and holding
+// messages in memory that are immediately discarded by the `to` check
+// below. Fetching in bounded chunks lets the loop stop as soon as it
+// passes `to` instead. A var, not a const, so tests can shrink it to
+// exercise the multi-batch path without publishing thousands of messages.
+var replayJetStreamFetchBatch = 1000
+
 const (
 	// replayJetStreamFetchTimeout bounds how long a replay read waits for
 	// JetStream to deliver the requested backlog. PendingCount has already
@@ -112,7 +123,9 @@ func parseReplayWindow(fromParam, toParam string) (time.Time, time.Time, error) 
 func (a *replayAPI) collectReplaySamples(ctx context.Context, from, to time.Time, bbox *geo.BBox) ([]pgstore.FlightHistoryRecord, error) {
 	retentionCutoff := time.Now().UTC().Add(-natsutil.FlightsUpdatesMaxAge)
 
-	var samples []pgstore.FlightHistoryRecord
+	// Non-nil even for an empty window so the response stays list-shaped
+	// (writeJSON would otherwise serialize a nil slice as `null`).
+	samples := make([]pgstore.FlightHistoryRecord, 0)
 
 	if from.Before(retentionCutoff) {
 		historyTo := to
@@ -142,9 +155,12 @@ func (a *replayAPI) collectReplaySamples(ctx context.Context, from, to time.Time
 }
 
 // collectJetStreamSamples replays flights.updates from from through to.
-// It sizes its single FetchBacklog call exactly via PendingCount rather
-// than guessing a batch size, the same precise-sizing approach
-// replayResume (ws_gateway.go) uses via FlightsUpdatesHeadSequence.
+// PendingCount only bounds the start of the backlog (everything after
+// from), not its end, so it's used to know when the backlog is exhausted
+// rather than to size one big FetchBacklog call: messages are pulled in
+// replayJetStreamFetchBatch-sized chunks and the loop stops as soon as a
+// message lands after `to`, so a `to` well short of the stream head
+// doesn't force decoding the entire remaining backlog.
 func (a *replayAPI) collectJetStreamSamples(ctx context.Context, from, to time.Time, bbox *geo.BBox) ([]pgstore.FlightHistoryRecord, error) {
 	reader, err := natsutil.NewFlightStateReplayReader(ctx, a.js, from)
 	if err != nil {
@@ -158,22 +174,39 @@ func (a *replayAPI) collectJetStreamSamples(ctx context.Context, from, to time.T
 		return nil, nil
 	}
 
-	backlog, err := reader.FetchBacklog(int(pending), replayJetStreamFetchTimeout, func(decodeErr error) {
-		a.logger.Error("replay backlog decode error", "err", decodeErr)
-	})
-	if err != nil {
-		return nil, err
-	}
+	out := make([]pgstore.FlightHistoryRecord, 0)
+	remaining := pending
+	for remaining > 0 {
+		batchSize := uint64(replayJetStreamFetchBatch)
+		if remaining < batchSize {
+			batchSize = remaining
+		}
 
-	out := make([]pgstore.FlightHistoryRecord, 0, len(backlog))
-	for _, msg := range backlog {
-		if msg.Timestamp.After(to) {
-			break // ordered delivery: every later message is also past `to`.
+		batch, err := reader.FetchBacklog(int(batchSize), replayJetStreamFetchTimeout, func(decodeErr error) {
+			a.logger.Error("replay backlog decode error", "err", decodeErr)
+		})
+		if err != nil {
+			return nil, err
 		}
-		if bbox != nil && !bbox.Contains(msg.State.Lat, msg.State.Lon) {
-			continue
+		if len(batch) == 0 {
+			break
 		}
-		out = append(out, flightStateMessageToHistoryRecord(msg))
+		remaining -= uint64(len(batch))
+
+		pastTo := false
+		for _, msg := range batch {
+			if msg.Timestamp.After(to) {
+				pastTo = true
+				break // ordered delivery: every later message is also past `to`.
+			}
+			if bbox != nil && !bbox.Contains(msg.State.Lat, msg.State.Lon) {
+				continue
+			}
+			out = append(out, flightStateMessageToHistoryRecord(msg))
+		}
+		if pastTo {
+			break
+		}
 	}
 	return out, nil
 }

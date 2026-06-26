@@ -3,6 +3,7 @@ package pgstore
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 )
 
@@ -58,6 +59,14 @@ func (s *Store) QueryFlightHistoryRange(ctx context.Context, from, to time.Time)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("pgstore: query flight history range: %w", err)
+	}
+	if len(out) == QueryFlightHistoryMaxRows {
+		// The result hit the cap, which means rows newer than the last one
+		// returned (up to `to`) were silently dropped — surface that
+		// rather than letting the replay scrubber show an unexplained gap
+		// near the live boundary.
+		slog.Warn("pgstore: flight history range query truncated at row cap",
+			"from", from.UTC(), "to", to.UTC(), "max_rows", QueryFlightHistoryMaxRows)
 	}
 	return out, nil
 }

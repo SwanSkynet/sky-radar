@@ -7,18 +7,24 @@ import type { ReplaySample } from "../api/replay";
 // WebSocket path uses (see useFlightStore.upsertFlight) — just driven by
 // scrub position instead of real time, since GET /replay returns a sparse
 // per-aircraft update stream rather than synchronized frames.
+//
+// sampleTimesMs is samples' recorded_at fields pre-parsed to epoch ms
+// (same index, computed once in useReplayStore.loadWindow), since this
+// runs on every scrub tick / playback frame and re-parsing each sample's
+// date string that often is unnecessary work.
 export function computeFlightsAtTime(
   samples: ReplaySample[],
+  sampleTimesMs: number[],
   atMs: number | null,
 ): FlightState[] {
   if (atMs === null) return [];
 
   const latest = new Map<string, ReplaySample>();
-  for (const sample of samples) {
+  for (let i = 0; i < samples.length; i++) {
     // Samples are time-ascending (see GET /replay's ordering guarantee),
     // so once one is past atMs every subsequent sample is too.
-    if (new Date(sample.recorded_at).getTime() > atMs) break;
-    latest.set(sample.icao24, sample);
+    if (sampleTimesMs[i] > atMs) break;
+    latest.set(samples[i].icao24, samples[i]);
   }
   return Array.from(latest.values()).map(sampleToFlightState);
 }
