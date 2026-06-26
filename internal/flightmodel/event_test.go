@@ -3,6 +3,7 @@ package flightmodel
 import (
 	"encoding/json"
 	"reflect"
+	"regexp"
 	"testing"
 	"time"
 )
@@ -74,5 +75,25 @@ func TestEventTypeAndSeverityValues(t *testing.T) {
 		if string(es) != wantSeverityValues[i] {
 			t.Errorf("EventSeverity %d: got %q, want %q", i, es, wantSeverityValues[i])
 		}
+	}
+}
+
+var uuidV4Pattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
+func TestNewEventIDReturnsRFC4122UUIDv4(t *testing.T) {
+	id := NewEventID()
+	if !uuidV4Pattern.MatchString(id) {
+		t.Errorf("NewEventID = %q, want a v4 UUID matching %s", id, uuidV4Pattern.String())
+	}
+}
+
+func TestNewEventIDIsUnique(t *testing.T) {
+	seen := make(map[string]bool)
+	for i := 0; i < 1000; i++ {
+		id := NewEventID()
+		if seen[id] {
+			t.Fatalf("NewEventID produced a duplicate: %q", id)
+		}
+		seen[id] = true
 	}
 }

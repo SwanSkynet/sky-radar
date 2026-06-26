@@ -2,12 +2,14 @@ package natsutil
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/SwanSkynet/sky-radar/internal/flightmodel"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func testJetStream(t *testing.T) (context.Context, *nats.Conn) {
@@ -173,5 +175,86 @@ func TestFlightStateSubscriberSkipsMalformedMessages(t *testing.T) {
 	}
 	if got.ICAO24 != want.ICAO24 {
 		t.Errorf("ICAO24 = %q, want %q", got.ICAO24, want.ICAO24)
+	}
+}
+
+func TestEnsureEventsDetectedStreamIsIdempotent(t *testing.T) {
+	ctx, nc := testJetStream(t)
+
+	js, err := JetStream(nc)
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+
+	if _, err := EnsureEventsDetectedStream(ctx, js); err != nil {
+		t.Fatalf("EnsureEventsDetectedStream (1st call): %v", err)
+	}
+	if _, err := EnsureEventsDetectedStream(ctx, js); err != nil {
+		t.Fatalf("EnsureEventsDetectedStream (2nd call): %v", err)
+	}
+}
+
+func TestPublishEventDeliversToSubscriber(t *testing.T) {
+	ctx, nc := testJetStream(t)
+
+	js, err := JetStream(nc)
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+	if _, err := EnsureEventsDetectedStream(ctx, js); err != nil {
+		t.Fatalf("EnsureEventsDetectedStream: %v", err)
+	}
+
+	want := flightmodel.Event{
+		ID:            flightmodel.NewEventID(),
+		Type:          flightmodel.EventTypeStaleSignal,
+		ICAO24:        "a1b2c3",
+		Severity:      flightmodel.EventSeverityWarning,
+		OccurredAtUTC: time.Now().UTC(),
+		Detail:        json.RawMessage(`{"stale_for_seconds":90}`),
+	}
+
+	publisher := NewEventPublisher(js)
+	if err := publisher.PublishEvent(ctx, want); err != nil {
+		t.Fatalf("PublishEvent: %v", err)
+	}
+
+	stream, err := js.Stream(ctx, StreamEventsDetected)
+	if err != nil {
+		t.Fatalf("js.Stream: %v", err)
+	}
+	consumer, err := stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
+		Durable:       "test-consumer",
+		AckPolicy:     jetstream.AckExplicitPolicy,
+		DeliverPolicy: jetstream.DeliverAllPolicy,
+	})
+	if err != nil {
+		t.Fatalf("CreateOrUpdateConsumer: %v", err)
+	}
+
+	msgs, err := consumer.Fetch(1, jetstream.FetchMaxWait(4*time.Second))
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+
+	var got *flightmodel.Event
+	for msg := range msgs.Messages() {
+		var event flightmodel.Event
+		if err := json.Unmarshal(msg.Data(), &event); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		got = &event
+		if err := msg.Ack(); err != nil {
+			t.Fatalf("Ack: %v", err)
+		}
+	}
+	if msgs.Error() != nil {
+		t.Fatalf("Fetch: %v", msgs.Error())
+	}
+	if got == nil {
+		t.Fatal("no event received")
+	}
+	if got.ID != want.ID || got.Type != want.Type || got.ICAO24 != want.ICAO24 {
+		t.Errorf("got %+v, want %+v", got, want)
 	}
 }

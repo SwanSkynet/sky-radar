@@ -7,7 +7,7 @@ See [ADR-0004](../decisions/0004-map-rendering-maplibre-deckgl.md) for the map r
 |---|---|---|
 | Framework | React + TypeScript | Widely known, strong typing against the API schema, large ecosystem for map/UI components |
 | Build tool | Vite | Fast dev server and HMR, simple config, fast CI builds |
-| Base map | MapLibre GL JS | Free/open-source WebGL vector-tile renderer |
+| Base map | MapLibre GL JS | Free/open-source WebGL vector-tile renderer, using CartoDB Dark Matter style for a professional, high-contrast dark-theme |
 | Aircraft layer | deck.gl (`ScatterplotLayer`/`IconLayer`) | Built for tens of thousands of frequently-updating points, layers directly on MapLibre |
 | State management | Zustand | Minimal boilerplate for map viewport, selected-flight, filter, and live-data state; avoids Redux ceremony for a project this size |
 | Styling | Tailwind CSS | Fast to build consistent UI without a custom design system overhead |
