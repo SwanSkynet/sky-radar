@@ -163,17 +163,15 @@ func FetchReviewStatus(ctx context.Context, prNumber int, branch string) (Review
 	// When a re-review finds nothing actionable, CodeRabbit sometimes posts a
 	// plain issue comment ("No actionable comments were generated...")
 	// instead of submitting a formal review - no pull_request_review event,
-	// no state, no commit_id. Comments can't be tied to a specific commit
-	// the way reviews can, so this is a best-effort heuristic: if that
-	// all-clear comment is the most recent CodeRabbit signal of any kind
-	// (newer than the latest formal review found above), treat it as
-	// approval. It's not airtight, but CodeRabbit posts it immediately after
-	// reviewing a push, so in practice it's never stale by more than seconds.
-	//
-	// CodeRabbit edits a single persistent walkthrough comment in place
-	// rather than posting a new one each time, so CreatedAt reflects the
-	// PR's very first review pass, not this one - UpdatedAt is the field
-	// that actually moves on every edit.
+	// no state, no commit_id, and (confirmed empirically against this repo)
+	// no formal review even with reviews.request_changes_workflow enabled in
+	// .coderabbit.yaml. Treating that comment as approval in our own state
+	// isn't enough: main's required-approving-review-count branch protection
+	// only looks at real review objects, so MergePR would still be blocked
+	// regardless of what this function returns. The actual fix is to ask
+	// CodeRabbit to submit one - "@coderabbitai approve" reliably produces a
+	// real APPROVED review (also confirmed empirically) - then fall through
+	// to Pending and let the next poll pick up that real review normally.
 	commentsCmd := exec.CommandContext(ctx, "gh", "api", "--paginate", fmt.Sprintf("repos/{owner}/{repo}/issues/%d/comments", prNumber))
 	commentsCmd.Dir = root
 	commentsOut, err := commentsCmd.Output()
@@ -190,6 +188,10 @@ func FetchReviewStatus(ctx context.Context, prNumber int, branch string) (Review
 	if err := json.Unmarshal(commentsOut, &comments); err != nil {
 		return ReviewResult{}, fmt.Errorf("parsing comments: %w", err)
 	}
+	// CodeRabbit edits a single persistent walkthrough comment in place
+	// rather than posting a new one each time, so CreatedAt reflects the
+	// PR's very first review pass, not this one - UpdatedAt is the field
+	// that actually moves on every edit.
 	var latestAllClear *time.Time
 	for i := range comments {
 		c := &comments[i]
@@ -205,7 +207,21 @@ func FetchReviewStatus(ctx context.Context, prNumber int, branch string) (Review
 		}
 	}
 	if latestAllClear != nil && (latest == nil || latestAllClear.After(latest.SubmittedAt)) {
-		return ReviewResult{Status: ReviewApproved}, nil
+		alreadyAsked := false
+		for i := range comments {
+			if strings.Contains(comments[i].Body, "@coderabbitai approve") && comments[i].UpdatedAt.After(*latestAllClear) {
+				alreadyAsked = true
+				break
+			}
+		}
+		if !alreadyAsked {
+			approveCmd := exec.CommandContext(ctx, "gh", "pr", "comment", fmt.Sprintf("%d", prNumber), "--body", "@coderabbitai approve")
+			approveCmd.Dir = root
+			if out, err := approveCmd.CombinedOutput(); err != nil {
+				return ReviewResult{}, fmt.Errorf("requesting coderabbit approval: %w: %s", err, out)
+			}
+		}
+		return ReviewResult{Status: ReviewPending}, nil
 	}
 
 	if latest == nil || latest.CommitID != headSHA {
