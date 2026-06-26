@@ -147,6 +147,32 @@ func TestSpeedObserveResetsBaselineAfterTrigger(t *testing.T) {
 	}
 }
 
+func TestSpeedDeltaDetectorEvictBeforeDropsStaleBaseline(t *testing.T) {
+	d := NewSpeedDeltaDetector(100, 250)
+	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+
+	d.Observe(flightmodel.FlightState{ICAO24: "a1b2c3", GroundSpeedKt: floatPtr(450), LastSeenUTC: now})
+	d.EvictBefore(now.Add(time.Second))
+
+	// The baseline was evicted, so this is treated as a first sighting
+	// again rather than compared against the dropped 450kt reading.
+	if _, ok := d.Observe(flightmodel.FlightState{ICAO24: "a1b2c3", GroundSpeedKt: floatPtr(700), LastSeenUTC: now.Add(time.Hour)}); ok {
+		t.Fatal("Observe triggered after eviction, want no event (baseline should have been dropped)")
+	}
+}
+
+func TestSpeedDeltaDetectorEvictBeforeKeepsRecentBaseline(t *testing.T) {
+	d := NewSpeedDeltaDetector(100, 250)
+	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+
+	d.Observe(flightmodel.FlightState{ICAO24: "a1b2c3", GroundSpeedKt: floatPtr(450), LastSeenUTC: now})
+	d.EvictBefore(now.Add(-time.Second))
+
+	if _, ok := d.Observe(flightmodel.FlightState{ICAO24: "a1b2c3", GroundSpeedKt: floatPtr(560), LastSeenUTC: now.Add(10 * time.Second)}); !ok {
+		t.Fatal("Observe did not trigger, want baseline to survive eviction cutoff before its last-observed time")
+	}
+}
+
 func TestSpeedObserveTracksMultipleAircraftIndependently(t *testing.T) {
 	d := NewSpeedDeltaDetector(100, 250)
 	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)

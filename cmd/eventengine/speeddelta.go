@@ -18,8 +18,9 @@ type SpeedDeltaDetector struct {
 	thresholdKt        float64
 	warningThresholdKt float64
 
-	mu          sync.Mutex
-	lastSpeedKt map[string]float64
+	mu             sync.Mutex
+	lastSpeedKt    map[string]float64
+	lastObservedAt map[string]time.Time
 }
 
 // NewSpeedDeltaDetector returns a detector that flags a speed_delta event
@@ -31,6 +32,7 @@ func NewSpeedDeltaDetector(thresholdKt, warningThresholdKt float64) *SpeedDeltaD
 		thresholdKt:        thresholdKt,
 		warningThresholdKt: warningThresholdKt,
 		lastSpeedKt:        make(map[string]float64),
+		lastObservedAt:     make(map[string]time.Time),
 	}
 }
 
@@ -53,6 +55,7 @@ func (d *SpeedDeltaDetector) Observe(state flightmodel.FlightState) (flightmodel
 
 	previous, tracked := d.lastSpeedKt[state.ICAO24]
 	d.lastSpeedKt[state.ICAO24] = current
+	d.lastObservedAt[state.ICAO24] = state.LastSeenUTC
 	if !tracked {
 		return flightmodel.Event{}, false
 	}
@@ -72,6 +75,24 @@ func (d *SpeedDeltaDetector) Observe(state flightmodel.FlightState) (flightmodel
 	}
 
 	return newSpeedDeltaEvent(state.ICAO24, state.LastSeenUTC, previous, current, delta, severity), true
+}
+
+// EvictBefore removes tracked speed baselines for aircraft last observed
+// before cutoff, bounding lastSpeedKt's growth for aircraft that have gone
+// silent rather than retaining every ICAO24 ever seen for the life of the
+// process. Callers should pass a cutoff derived from the stale-signal
+// threshold so eviction lags well behind any aircraft that is still
+// active.
+func (d *SpeedDeltaDetector) EvictBefore(cutoff time.Time) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	for icao24, lastObserved := range d.lastObservedAt {
+		if lastObserved.Before(cutoff) {
+			delete(d.lastSpeedKt, icao24)
+			delete(d.lastObservedAt, icao24)
+		}
+	}
 }
 
 // speedDeltaDetail is the type-specific Event.Detail payload for

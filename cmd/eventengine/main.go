@@ -62,10 +62,9 @@ const (
 	defaultSpeedDeltaThresholdKt = 100
 
 	// defaultSpeedWarningThresholdKt escalates a speed_delta event to
-	// EventSeverityWarning once the jump triples the notable threshold,
-	// mirroring the altitude-delta escalation ratio — large enough to
-	// suggest an abrupt maneuver or a bad reading rather than routine
-	// acceleration/deceleration.
+	// EventSeverityWarning once the jump reaches 2.5x the notable
+	// threshold — large enough to suggest an abrupt maneuver or a bad
+	// reading rather than routine acceleration/deceleration.
 	defaultSpeedWarningThresholdKt = 250
 )
 
@@ -124,7 +123,8 @@ func main() {
 	}
 	eventPublisher := natsutil.NewEventPublisher(js)
 
-	staleDetector := NewStaleSignalDetector(envDuration(logger, "STALE_THRESHOLD_SECONDS", defaultStaleThreshold))
+	staleThreshold := envDuration(logger, "STALE_THRESHOLD_SECONDS", defaultStaleThreshold)
+	staleDetector := NewStaleSignalDetector(staleThreshold)
 	altitudeDetector := NewAltitudeDeltaDetector(
 		envInt(logger, "ALTITUDE_DELTA_THRESHOLD_FT", defaultAltitudeDeltaThresholdFt),
 		envInt(logger, "ALTITUDE_WARNING_THRESHOLD_FT", defaultAltitudeWarningThresholdFt),
@@ -166,7 +166,13 @@ func main() {
 	}()
 
 	staleSweepInterval := envDuration(logger, "STALE_SWEEP_INTERVAL_SECONDS", defaultStaleSweepInterval)
-	go runStaleSweepLoop(ctx, logger, staleDetector, eventPublisher, staleSweepInterval)
+	// speedBaselineEvictAfter mirrors StaleSignalDetector's own
+	// evictAfterMultiple bookkeeping: an aircraft is only dropped from
+	// speedDetector's baseline map once it has been silent for several
+	// multiples of the stale threshold, well past the point it would
+	// already be flagged stale.
+	speedBaselineEvictAfter := staleThreshold * evictAfterMultiple
+	go runStaleSweepLoop(ctx, logger, staleDetector, speedDetector, eventPublisher, staleSweepInterval, speedBaselineEvictAfter)
 
 	go func() {
 		logger.Info("starting server", "addr", srv.Addr)
@@ -203,8 +209,12 @@ func logFlightUpdate(logger *slog.Logger, state flightmodel.FlightState) {
 // gone silent past threshold and publishes the resulting Events to
 // events.detected until ctx is done. A failed publish is logged and
 // skipped rather than stopping the loop, mirroring the normalizer's
-// bulkhead handling of transient NATS hiccups (cmd/normalizer/main.go).
-func runStaleSweepLoop(ctx context.Context, logger *slog.Logger, detector *StaleSignalDetector, publisher *natsutil.EventPublisher, interval time.Duration) {
+// bulkhead handling of transient NATS hiccups (cmd/normalizer/main.go). It
+// also evicts speedDetector's per-aircraft baselines once an aircraft has
+// been silent for speedBaselineEvictAfter, bounding that detector's memory
+// growth for aircraft that have gone away rather than tracking them for
+// the life of the process.
+func runStaleSweepLoop(ctx context.Context, logger *slog.Logger, detector *StaleSignalDetector, speedDetector *SpeedDeltaDetector, publisher *natsutil.EventPublisher, interval, speedBaselineEvictAfter time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -215,13 +225,15 @@ func runStaleSweepLoop(ctx context.Context, logger *slog.Logger, detector *Stale
 		case <-ticker.C:
 		}
 
-		for _, event := range detector.Sweep(time.Now()) {
+		now := time.Now()
+		for _, event := range detector.Sweep(now) {
 			if err := publisher.PublishEvent(ctx, event); err != nil {
 				logger.Error("publish event failed", "icao24", event.ICAO24, "type", event.Type, "err", err)
 				continue
 			}
 			logger.Info("event detected", "icao24", event.ICAO24, "type", event.Type)
 		}
+		speedDetector.EvictBefore(now.Add(-speedBaselineEvictAfter))
 	}
 }
 
