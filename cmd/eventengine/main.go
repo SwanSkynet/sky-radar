@@ -86,7 +86,13 @@ func main() {
 		}, func(state flightmodel.FlightState) {
 			logFlightUpdate(logger, state)
 		}); err != nil {
+			// Run only returns a non-nil error if the initial consumer
+			// setup fails (it otherwise blocks until ctx is done and
+			// returns nil), so this is a startup-class failure: exit
+			// rather than leave /healthz reporting ok with no subscriber
+			// actually running.
 			logger.Error("flights.updates subscriber stopped", "err", err)
+			os.Exit(1)
 		}
 	}()
 
@@ -113,7 +119,11 @@ func main() {
 // placeholder for the rule evaluation described in
 // docs/prd/phase-2-realtime-systems.md, which lands in a later milestone.
 func logFlightUpdate(logger *slog.Logger, state flightmodel.FlightState) {
-	logger.Info("received flight update", "icao24", state.ICAO24, "callsign", state.Callsign)
+	var callsign string
+	if state.Callsign != nil {
+		callsign = *state.Callsign
+	}
+	logger.Info("received flight update", "icao24", state.ICAO24, "callsign", callsign)
 }
 
 func envString(key, fallback string) string {

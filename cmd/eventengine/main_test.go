@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -44,6 +46,19 @@ func TestLogFlightUpdateDoesNotPanic(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	callsign := "UAL123"
 	logFlightUpdate(logger, flightmodel.FlightState{ICAO24: "a1b2c3", Callsign: &callsign})
+}
+
+func TestLogFlightUpdateHandlesNilCallsign(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	logFlightUpdate(logger, flightmodel.FlightState{ICAO24: "a1b2c3"})
+
+	if got := buf.String(); strings.Contains(got, "0x") {
+		t.Errorf("log output contains a pointer address, want dereferenced callsign: %s", got)
+	}
+	if got := buf.String(); !strings.Contains(got, `callsign=""`) {
+		t.Errorf("log output = %s, want empty callsign field", got)
+	}
 }
 
 // TestSubscriberReceivesIndependentlyOfOtherConsumers proves the eventengine

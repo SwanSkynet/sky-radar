@@ -159,11 +159,12 @@ func TestRunMergeLoopPublishesFlightStateToFlightsUpdates(t *testing.T) {
 
 	var got *flightmodel.FlightState
 	done := make(chan struct{})
+	errCh := make(chan error, 1)
 	runCtx, runCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer runCancel()
 
 	go func() {
-		_ = sub.Run(runCtx, nil, func(state flightmodel.FlightState) {
+		errCh <- sub.Run(runCtx, nil, func(state flightmodel.FlightState) {
 			if got == nil {
 				got = &state
 				close(done)
@@ -173,6 +174,8 @@ func TestRunMergeLoopPublishesFlightStateToFlightsUpdates(t *testing.T) {
 
 	select {
 	case <-done:
+	case err := <-errCh:
+		t.Fatalf("sub.Run: %v", err)
 	case <-time.After(4 * time.Second):
 		t.Fatal("timed out waiting for flights.updates message")
 	}
@@ -182,6 +185,35 @@ func TestRunMergeLoopPublishesFlightStateToFlightsUpdates(t *testing.T) {
 	}
 	if got.Callsign == nil || *got.Callsign != "UAL123" {
 		t.Errorf("Callsign = %v, want UAL123", got.Callsign)
+	}
+}
+
+func TestPersistAndPublishSkipsPublishWhenWriteFails(t *testing.T) {
+	redisClient := testRedisClient(t)
+	publisher, sub := testPublisher(t)
+	ctx := context.Background()
+
+	if err := redisClient.Close(); err != nil {
+		t.Fatalf("redisClient.Close: %v", err)
+	}
+
+	state := flightmodel.FlightState{ICAO24: "a1b2c3", LastSeenUTC: time.Now().UTC()}
+	persistAndPublish(ctx, testLogger(), redisClient, publisher, state, time.Minute)
+
+	runCtx, runCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer runCancel()
+	received := make(chan struct{})
+
+	go func() {
+		_ = sub.Run(runCtx, nil, func(flightmodel.FlightState) {
+			close(received)
+		})
+	}()
+
+	select {
+	case <-received:
+		t.Fatal("PublishFlightState was called despite a failed Redis write")
+	case <-runCtx.Done():
 	}
 }
 

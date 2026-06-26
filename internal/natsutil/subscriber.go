@@ -59,11 +59,15 @@ func (s *FlightStateSubscriber) Run(ctx context.Context, onErr func(error), hand
 			if onErr != nil {
 				onErr(fmt.Errorf("natsutil: decode flight state: %w", err))
 			}
-			_ = msg.Ack()
+			if ackErr := msg.Ack(); ackErr != nil && onErr != nil {
+				onErr(fmt.Errorf("natsutil: ack message: %w", ackErr))
+			}
 			return
 		}
 		handler(state)
-		_ = msg.Ack()
+		if ackErr := msg.Ack(); ackErr != nil && onErr != nil {
+			onErr(fmt.Errorf("natsutil: ack message: %w", ackErr))
+		}
 	})
 	if err != nil {
 		return fmt.Errorf("natsutil: consume: %w", err)

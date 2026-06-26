@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/SwanSkynet/sky-radar/internal/flightmodel"
 	"github.com/SwanSkynet/sky-radar/internal/health"
 	"github.com/SwanSkynet/sky-radar/internal/natsutil"
 	"github.com/SwanSkynet/sky-radar/internal/redisutil"
@@ -137,12 +138,7 @@ func runMergeLoop(ctx context.Context, logger *slog.Logger, redisClient *redisut
 		} else {
 			states := MergeAll(raws)
 			for _, state := range states {
-				if err := redisClient.WriteFlightState(ctx, state, ttl); err != nil {
-					logger.Error("write flight state failed", "icao24", state.ICAO24, "err", err)
-				}
-				if err := publisher.PublishFlightState(ctx, state); err != nil {
-					logger.Error("publish flight state failed", "icao24", state.ICAO24, "err", err)
-				}
+				persistAndPublish(ctx, logger, redisClient, publisher, state, ttl)
 			}
 			logger.Info("merge cycle complete", "raw_count", len(raws), "flight_count", len(states))
 		}
@@ -158,6 +154,20 @@ func runMergeLoop(ctx context.Context, logger *slog.Logger, redisClient *redisut
 			return
 		case <-ticker.C:
 		}
+	}
+}
+
+// persistAndPublish writes state to Redis hot state and, only if that
+// write succeeds, publishes it to flights.updates. Publishing after a
+// failed write would let downstream consumers see an update that the
+// /readyz-backing hot state never actually held.
+func persistAndPublish(ctx context.Context, logger *slog.Logger, redisClient *redisutil.Client, publisher *natsutil.FlightStatePublisher, state flightmodel.FlightState, ttl time.Duration) {
+	if err := redisClient.WriteFlightState(ctx, state, ttl); err != nil {
+		logger.Error("write flight state failed", "icao24", state.ICAO24, "err", err)
+		return
+	}
+	if err := publisher.PublishFlightState(ctx, state); err != nil {
+		logger.Error("publish flight state failed", "icao24", state.ICAO24, "err", err)
 	}
 }
 

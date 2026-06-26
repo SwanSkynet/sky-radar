@@ -31,7 +31,7 @@ const (
 func Connect(url string, opts ...nats.Option) (*nats.Conn, error) {
 	nc, err := nats.Connect(url, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("natsutil: connect %s: %w", url, err)
+		return nil, fmt.Errorf("natsutil: connect: %w", err)
 	}
 	return nc, nil
 }
