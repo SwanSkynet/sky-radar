@@ -167,7 +167,7 @@ jobs:
           persist-credentials: false
       
       - name: Copy docker-compose and Caddyfile to Droplet
-        uses: appleboy/scp-action@917f8b857790b14b3010b938384b069695d0383b # v0.1.7
+        uses: appleboy/scp-action@917f8b81dfc1ccd331fef9e2d61bdc6c8be94634 # v0.1.7
         with:
           host: ${{ secrets.DIGITALOCEAN_HOST }}
           username: ${{ secrets.DIGITALOCEAN_USERNAME }}
@@ -177,7 +177,7 @@ jobs:
           strip_components: 0
 
       - name: Deploy on Droplet via SSH
-        uses: appleboy/ssh-action@7eaf7666270928236171f1659a5840d42bc02a24 # v1.2.0
+        uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
         with:
           host: ${{ secrets.DIGITALOCEAN_HOST }}
           username: ${{ secrets.DIGITALOCEAN_USERNAME }}
