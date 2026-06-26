@@ -84,6 +84,9 @@ chmod 600 /swapfile
 mkswap /swapfile
 swapon /swapfile
 echo '/swapfile none swap sw 0 0' >> /etc/fstab
+
+# 3. Create the deployment directory
+mkdir -p /root/sky-radar/deploy
 ```
 
 ### 2. GitHub Secrets Config
@@ -91,6 +94,9 @@ In your GitHub Repository, go to **Settings > Secrets and variables > Actions** 
 * `DIGITALOCEAN_HOST`: Your Droplet's public IP address.
 * `DIGITALOCEAN_USERNAME`: Typically `root`.
 * `DIGITALOCEAN_SSH_KEY`: The private SSH key matching the public key on the Droplet.
+* `POSTGRES_PASSWORD`: The password for the production PostgreSQL database.
+* `POSTGRES_USER`: (Optional) The username for the PostgreSQL database (defaults to `postgres`).
+* `POSTGRES_DB`: (Optional) The database name for the PostgreSQL database (defaults to `postgres`).
 
 ### 3. DNS Configuration
 Point your domain (e.g., `skyradar.swanathiyarath.com`) to the Droplet's IP address. Caddy will detect the request, secure a Let's Encrypt certificate, and handle HTTPS traffic automatically.
