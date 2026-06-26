@@ -2,13 +2,13 @@
 // independent downstream consumer and evaluates each update against the
 // event-detection rule set, publishing detected Events to events.detected.
 // See docs/tech-stack/backend.md. Only the stale-signal, altitude-delta,
-// and speed-delta rules are implemented so far; the remaining rules
-// (geofence, watchlist) land in later milestones, see
-// docs/implementation-plan.md.
+// speed-delta, and geofence rules are implemented so far; watchlist match
+// lands in a later milestone, see docs/implementation-plan.md.
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
@@ -67,6 +67,13 @@ const (
 	// reading rather than routine acceleration/deceleration.
 	defaultSpeedWarningThresholdKt = 250
 )
+
+// geofenceZonesEnvVar names the env var holding the JSON-encoded
+// []flightmodel.Zone the geofence detector evaluates against. Loading
+// zones from Postgres is durable-store wiring deferred to a later
+// milestone (see docs/implementation-plan.md); this env var is the
+// smallest input the engine needs to run the rule in the meantime.
+const geofenceZonesEnvVar = "GEOFENCE_ZONES_JSON"
 
 func healthz(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
@@ -133,6 +140,7 @@ func main() {
 		envFloat(logger, "SPEED_DELTA_THRESHOLD_KT", defaultSpeedDeltaThresholdKt),
 		envFloat(logger, "SPEED_WARNING_THRESHOLD_KT", defaultSpeedWarningThresholdKt),
 	)
+	geofenceDetector := NewGeofenceDetector(envZones(logger, geofenceZonesEnvVar))
 
 	go func() {
 		if err := subscriber.Run(ctx, func(err error) {
@@ -148,6 +156,13 @@ func main() {
 				}
 			}
 			if event, ok := speedDetector.Observe(state); ok {
+				if err := eventPublisher.PublishEvent(ctx, event); err != nil {
+					logger.Error("publish event failed", "icao24", event.ICAO24, "type", event.Type, "err", err)
+				} else {
+					logger.Info("event detected", "icao24", event.ICAO24, "type", event.Type)
+				}
+			}
+			for _, event := range geofenceDetector.Observe(state) {
 				if err := eventPublisher.PublishEvent(ctx, event); err != nil {
 					logger.Error("publish event failed", "icao24", event.ICAO24, "type", event.Type, "err", err)
 				} else {
@@ -268,6 +283,24 @@ func envFloat(logger *slog.Logger, key string, fallback float64) float64 {
 		return fallback
 	}
 	return n
+}
+
+// envZones parses key as a JSON array of flightmodel.Zone, returning nil
+// (no zones, geofence detection becomes a no-op) if the env var is unset or
+// fails to parse. This is a placeholder zone source until zones have a
+// durable home in Postgres (out of scope for this milestone, see
+// docs/implementation-plan.md).
+func envZones(logger *slog.Logger, key string) []flightmodel.Zone {
+	v := os.Getenv(key)
+	if v == "" {
+		return nil
+	}
+	var zones []flightmodel.Zone
+	if err := json.Unmarshal([]byte(v), &zones); err != nil {
+		logger.Warn("invalid zones JSON env var, ignoring", "key", key, "err", err)
+		return nil
+	}
+	return zones
 }
 
 func envDuration(logger *slog.Logger, key string, fallback time.Duration) time.Duration {
