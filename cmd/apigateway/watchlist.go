@@ -27,6 +27,11 @@ type createWatchlistEntryRequest struct {
 	Label  string `json:"label"`
 }
 
+// maxWatchlistEntryRequestBytes bounds the POST /watchlist body so an
+// oversized or unbounded request can't be used to exhaust memory while
+// json.NewDecoder reads it.
+const maxWatchlistEntryRequestBytes = 1 << 16
+
 // createWatchlistEntry handles POST /watchlist.
 func (a *watchlistAPI) createWatchlistEntry(w http.ResponseWriter, r *http.Request) {
 	session, ok := requireSession(w, r)
@@ -34,6 +39,7 @@ func (a *watchlistAPI) createWatchlistEntry(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxWatchlistEntryRequestBytes)
 	var req createWatchlistEntryRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")

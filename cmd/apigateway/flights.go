@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -127,6 +128,9 @@ func parseOptionalFloat(s string) (*float64, error) {
 	v, err := strconv.ParseFloat(s, 64)
 	if err != nil {
 		return nil, err
+	}
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return nil, fmt.Errorf("value must be finite")
 	}
 	return &v, nil
 }

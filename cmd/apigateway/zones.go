@@ -31,7 +31,7 @@ type zonesAPI struct {
 // either server-generated (ID, CreatedAt) or read from sessionHeader
 // (CreatedBySession), not supplied by the client.
 type createZoneRequest struct {
-	Name    string                    `json:"name"`
+	Name    string                     `json:"name"`
 	Polygon flightmodel.GeoJSONPolygon `json:"polygon"`
 }
 

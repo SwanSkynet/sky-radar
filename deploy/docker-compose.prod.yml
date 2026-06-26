@@ -105,7 +105,7 @@ services:
     environment:
       - PORT=8085
       - NATS_URL=nats://nats:4222
-      - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=${POSTGRES_SSLMODE:-disable}
     depends_on:
       nats:
         condition: service_healthy
@@ -118,7 +118,7 @@ services:
     environment:
       - PORT=8086
       - NATS_URL=nats://nats:4222
-      - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=${POSTGRES_SSLMODE:-disable}
     depends_on:
       nats:
         condition: service_healthy
@@ -132,7 +132,7 @@ services:
       - PORT=8080
       - REDIS_ADDR=redis:6379
       - NATS_URL=nats://nats:4222
-      - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=${POSTGRES_SSLMODE:-disable}
     depends_on:
       redis:
         condition: service_healthy

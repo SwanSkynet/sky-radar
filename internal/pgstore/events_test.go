@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -121,6 +122,29 @@ func TestQueryEventsFiltersByType(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].ID != altitude.ID {
 		t.Fatalf("got %+v, want exactly the altitude_delta event", got)
+	}
+}
+
+func TestQueryEventsFiltersByICAO24CaseInsensitive(t *testing.T) {
+	store := newTestStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	icao24 := fmt.Sprintf("T%dAB", time.Now().UnixNano())
+	event := flightmodel.Event{
+		ID: flightmodel.NewEventID(), Type: flightmodel.EventTypeAltitudeDelta,
+		ICAO24: icao24, Severity: flightmodel.EventSeverityNotable, OccurredAtUTC: time.Now().UTC().Truncate(time.Microsecond),
+	}
+	if err := store.InsertEvent(ctx, event); err != nil {
+		t.Fatalf("InsertEvent: %v", err)
+	}
+
+	got, err := store.QueryEvents(ctx, EventFilter{ICAO24: strings.ToUpper(icao24)})
+	if err != nil {
+		t.Fatalf("QueryEvents: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != event.ID {
+		t.Fatalf("got %+v, want exactly the inserted event regardless of icao24 casing", got)
 	}
 }
 

@@ -23,7 +23,7 @@ func (s *Store) InsertEvent(ctx context.Context, event flightmodel.Event) error 
 		INSERT INTO events (id, type, icao24, severity, occurred_at_utc, detail)
 		VALUES ($1, $2, $3, $4, $5, $6::jsonb)
 		ON CONFLICT (id) DO NOTHING
-	`, event.ID, string(event.Type), event.ICAO24, string(event.Severity), event.OccurredAtUTC.UTC(), detail)
+	`, event.ID, string(event.Type), strings.ToLower(event.ICAO24), string(event.Severity), event.OccurredAtUTC.UTC(), detail)
 	if err != nil {
 		return fmt.Errorf("pgstore: insert event %s: %w", event.ID, err)
 	}

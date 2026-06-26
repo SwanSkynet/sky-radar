@@ -296,10 +296,18 @@ func runZonesWatchlistRefreshLoop(ctx context.Context, logger *slog.Logger, pg *
 	}
 }
 
+// refreshZonesWatchlistTimeout bounds a single refreshZonesWatchlist pass so
+// a hung or slow Postgres read fails fast and retries on the next tick,
+// instead of stalling on the service's long-lived root context.
+const refreshZonesWatchlistTimeout = 5 * time.Second
+
 // refreshZonesWatchlist performs a single read-from-Postgres-and-push pass
 // for runZonesWatchlistRefreshLoop, pulled out so tests can exercise one
 // pass directly without waiting on the loop's ticker.
 func refreshZonesWatchlist(ctx context.Context, logger *slog.Logger, pg *pgstore.Store, geofenceDetector *GeofenceDetector, watchlistDetector *WatchlistDetector, envZones []flightmodel.Zone, envEntries []flightmodel.WatchlistEntry) {
+	ctx, cancel := context.WithTimeout(ctx, refreshZonesWatchlistTimeout)
+	defer cancel()
+
 	if zones, err := pg.ListAllZones(ctx); err != nil {
 		logger.Error("refresh zones from postgres failed", "err", err)
 	} else {

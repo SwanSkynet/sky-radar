@@ -97,6 +97,7 @@ In your GitHub Repository, go to **Settings > Secrets and variables > Actions** 
 * `POSTGRES_PASSWORD`: The password for the production PostgreSQL database.
 * `POSTGRES_USER`: (Optional) The username for the PostgreSQL database (defaults to `postgres`).
 * `POSTGRES_DB`: (Optional) The database name for the PostgreSQL database (defaults to `postgres`).
+* `POSTGRES_SSLMODE`: (Optional) The `sslmode` used by backend services connecting to PostgreSQL (defaults to `disable`, since `postgres` is only reachable over the internal Compose network). Set to `require` or stricter if PostgreSQL is moved off the internal network.
 * `OPENSKY_CLIENT_ID`: OAuth2 client ID for the OpenSky Network API, used by `adapter-opensky`.
 * `OPENSKY_CLIENT_SECRET`: OAuth2 client secret for the OpenSky Network API, used by `adapter-opensky`.
 
