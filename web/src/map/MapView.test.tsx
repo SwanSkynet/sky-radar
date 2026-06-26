@@ -31,7 +31,9 @@ vi.mock("maplibre-gl", () => {
   class FakeMap {
     private handlers: Record<string, (() => void)[]> = {};
     constructor() {
-      fakeMapInstances.push(this as unknown as { emit: (event: string) => void });
+      fakeMapInstances.push(
+        this as unknown as { emit: (event: string) => void },
+      );
     }
     on(event: string, handler: () => void) {
       (this.handlers[event] ??= []).push(handler);
