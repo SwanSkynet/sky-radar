@@ -38,10 +38,14 @@ func (s *Store) Migrate(ctx context.Context) error {
 		return fmt.Errorf("pgstore: acquire migration lock: %w", err)
 	}
 	defer func() {
-		if _, err := conn.Exec(ctx, `SELECT pg_advisory_unlock($1)`, migrationAdvisoryLockKey); err != nil {
-			// Best effort: if this fails the lock is still released when
-			// the connection is closed/reset, just not as promptly.
-			_ = err
+		// Use a fresh context for the unlock: ctx may already be canceled
+		// by the time this runs, which would skip pg_advisory_unlock and
+		// leave the session lock held on a connection that goes back to
+		// the pool. If the unlock still fails for some other reason, close
+		// the connection outright so the lock can't be retained.
+		unlockCtx := context.Background()
+		if _, err := conn.Exec(unlockCtx, `SELECT pg_advisory_unlock($1)`, migrationAdvisoryLockKey); err != nil {
+			conn.Conn().Close(unlockCtx)
 		}
 	}()
 

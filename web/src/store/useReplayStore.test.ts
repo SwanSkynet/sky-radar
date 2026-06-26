@@ -63,6 +63,19 @@ describe("useReplayStore", () => {
     expect(useReplayStore.getState().sampleTimesMs).toEqual([1000, 2000]);
   });
 
+  it("loadWindow drops samples with an unparseable recorded_at instead of caching NaN", () => {
+    const samples = [
+      sample({ icao24: "valid1", recorded_at: new Date(1000).toISOString() }),
+      sample({ icao24: "bad", recorded_at: "not-a-date" }),
+      sample({ icao24: "valid2", recorded_at: new Date(2000).toISOString() }),
+    ];
+    useReplayStore.getState().loadWindow(samples, 1000, 5000);
+
+    const state = useReplayStore.getState();
+    expect(state.samples.map((s) => s.icao24)).toEqual(["valid1", "valid2"]);
+    expect(state.sampleTimesMs).toEqual([1000, 2000]);
+  });
+
   it("setError surfaces the error and clears the loading flag", () => {
     useReplayStore.getState().startLoading();
     useReplayStore.getState().setError("failed to load replay window");

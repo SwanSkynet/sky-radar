@@ -45,17 +45,33 @@ export const useReplayStore = create<ReplayStore>((set) => ({
 
   startLoading: () => set({ isActive: true, isLoading: true, error: null }),
 
-  loadWindow: (samples, windowStartMs, windowEndMs) =>
+  loadWindow: (samples, windowStartMs, windowEndMs) => {
+    // Drop any sample whose recorded_at doesn't parse to a finite
+    // timestamp instead of caching NaN into sampleTimesMs — NaN
+    // comparisons in computeFlightsAtTime's cutoff check are always
+    // false, so a malformed sample would never be excluded by the scrub
+    // position. samples and sampleTimesMs must stay aligned by index.
+    const validSamples: ReplaySample[] = [];
+    const validTimesMs: number[] = [];
+    for (const s of samples) {
+      const t = new Date(s.recorded_at).getTime();
+      if (Number.isFinite(t)) {
+        validSamples.push(s);
+        validTimesMs.push(t);
+      }
+    }
     set({
-      samples,
-      sampleTimesMs: samples.map((s) => new Date(s.recorded_at).getTime()),
+      // Keep the original array reference when nothing was dropped.
+      samples: validSamples.length === samples.length ? samples : validSamples,
+      sampleTimesMs: validTimesMs,
       windowStartMs,
       windowEndMs,
       scrubMs: windowStartMs,
       isLoading: false,
       isPlaying: false,
       error: null,
-    }),
+    });
+  },
 
   setError: (error) => set({ isLoading: false, error }),
 
