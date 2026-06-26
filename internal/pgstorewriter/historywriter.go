@@ -69,7 +69,7 @@ func (w *HistoryWriter) Observe(ctx context.Context, state flightmodel.FlightSta
 	}
 	if err := w.store.InsertFlightHistory(ctx, rec); err != nil {
 		w.mu.Lock()
-		if w.lastSeen[icao24] == now {
+		if w.lastSeen[icao24].Equal(now) {
 			if ok {
 				w.lastSeen[icao24] = last
 			} else {
