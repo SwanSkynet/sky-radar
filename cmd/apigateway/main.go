@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/SwanSkynet/sky-radar/internal/health"
 	"github.com/SwanSkynet/sky-radar/internal/redisutil"
 	"github.com/redis/go-redis/v9"
 )
@@ -22,16 +23,12 @@ const (
 	defaultRedisAddr = "localhost:6379"
 )
 
-func healthz(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("ok"))
-}
-
 // newRouter wires the public REST routes onto a fresh mux. Pulled out of
 // main so tests can exercise the same routing this binary actually serves.
 func newRouter(api *flightsAPI) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", healthz)
+	mux.HandleFunc("GET /healthz", health.Live)
+	mux.HandleFunc("GET /readyz", health.Ready(api.redis))
 	mux.HandleFunc("GET /flights", api.listFlights)
 	mux.HandleFunc("GET /flights/{icao24}", api.getFlight)
 	return withCORS(mux)

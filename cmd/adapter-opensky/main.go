@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/SwanSkynet/sky-radar/internal/health"
 	"github.com/SwanSkynet/sky-radar/internal/redisutil"
 	"github.com/SwanSkynet/sky-radar/internal/sourceadapter"
 	"github.com/redis/go-redis/v9"
@@ -33,11 +34,6 @@ const (
 	defaultRedisAddr    = "localhost:6379"
 )
 
-func healthz(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("ok"))
-}
-
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", serviceName)
 
@@ -47,7 +43,6 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", healthz)
 
 	srv := &http.Server{
 		Addr:              ":" + port,
@@ -84,6 +79,9 @@ func main() {
 		logger.Error("redis ping failed", "err", err)
 		os.Exit(1)
 	}
+
+	mux.HandleFunc("GET /healthz", health.Live)
+	mux.HandleFunc("GET /readyz", health.Ready(redisClient))
 
 	pollInterval := envDuration("POLL_INTERVAL_SECONDS", defaultPollInterval)
 	rawStateTTL := envDuration("RAW_STATE_TTL_SECONDS", defaultRawStateTTL)
