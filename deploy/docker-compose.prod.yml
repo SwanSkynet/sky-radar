@@ -1,0 +1,150 @@
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      web:
+        condition: service_started
+      apigateway:
+        condition: service_started
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+
+  nats:
+    image: nats:2-alpine
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    restart: unless-stopped
+    volumes:
+      - nats_data:/data
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+
+  adapter-opensky:
+    image: ghcr.io/${GHCR_OWNER:-swanskynet}/sky-radar-adapter-opensky:${TAG:-latest}
+    restart: unless-stopped
+    environment:
+      - PORT=8081
+      - REDIS_ADDR=redis:6379
+      - OPENSKY_CLIENT_ID=${OPENSKY_CLIENT_ID}
+      - OPENSKY_CLIENT_SECRET=${OPENSKY_CLIENT_SECRET}
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  adapter-adsblol:
+    image: ghcr.io/${GHCR_OWNER:-swanskynet}/sky-radar-adapter-adsblol:${TAG:-latest}
+    restart: unless-stopped
+    environment:
+      - PORT=8082
+      - REDIS_ADDR=redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  adapter-airplaneslive:
+    image: ghcr.io/${GHCR_OWNER:-swanskynet}/sky-radar-adapter-airplaneslive:${TAG:-latest}
+    restart: unless-stopped
+    environment:
+      - PORT=8083
+      - REDIS_ADDR=redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  normalizer:
+    image: ghcr.io/${GHCR_OWNER:-swanskynet}/sky-radar-normalizer:${TAG:-latest}
+    restart: unless-stopped
+    environment:
+      - PORT=8084
+      - REDIS_ADDR=redis:6379
+      - NATS_URL=nats://nats:4222
+    depends_on:
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+
+  eventengine:
+    image: ghcr.io/${GHCR_OWNER:-swanskynet}/sky-radar-eventengine:${TAG:-latest}
+    restart: unless-stopped
+    environment:
+      - PORT=8085
+      - NATS_URL=nats://nats:4222
+    depends_on:
+      nats:
+        condition: service_healthy
+
+  pgstorewriter:
+    image: ghcr.io/${GHCR_OWNER:-swanskynet}/sky-radar-pgstorewriter:${TAG:-latest}
+    restart: unless-stopped
+    environment:
+      - PORT=8086
+      - NATS_URL=nats://nats:4222
+      - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+    depends_on:
+      nats:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  apigateway:
+    image: ghcr.io/${GHCR_OWNER:-swanskynet}/sky-radar-apigateway:${TAG:-latest}
+    restart: unless-stopped
+    environment:
+      - PORT=8080
+      - REDIS_ADDR=redis:6379
+      - NATS_URL=nats://nats:4222
+      - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+    depends_on:
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  web:
+    image: ghcr.io/${GHCR_OWNER:-swanskynet}/sky-radar-web:${TAG:-latest}
+    restart: unless-stopped
+
+volumes:
+  redis_data:
+  postgres_data:
+  caddy_data:
+  caddy_config:
+  nats_data:

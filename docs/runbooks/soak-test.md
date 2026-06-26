@@ -6,17 +6,17 @@
 [implementation plan](../implementation-plan.md#phase-1--foundation) gate
 Phase 1 on the system running **unattended for 24+ hours with no manual
 restarts**. This runbook is how to actually run and judge that test, either
-against the local `docker-compose` stack or the production Fly.io
+against the local `docker-compose` stack or the production DigitalOcean
 deployment.
 
 ## Prerequisites
 
 - `curl` and `bash` (the soak script has no other dependencies).
 - For a local run: `docker compose` (see [`docker-compose.yml`](../../docker-compose.yml)).
-- For a production run: the public apigateway URL from
+- For a production run: the public unified domain from
   [`hosting-and-deployment.md`](../tech-stack/hosting-and-deployment.md)
-  (`https://sky-radar-apigateway.fly.dev`); the adapters/normalizer are
-  internal-only on Fly's private network, so they can't be polled directly
+  (`https://skyradar.swanathiyarath.com/api`); the individual service ports are
+  internal-only on the Docker network, so they can't be polled directly
   from outside — see "Production run" below for the workaround.
 
 ## What the script checks
@@ -79,20 +79,16 @@ Override duration/interval for a shorter dry run:
 SOAK_DURATION_SECONDS=3600 SOAK_INTERVAL_SECONDS=30 ./scripts/soak-test.sh
 ```
 
-## Production run (Fly.io)
+## Production run (DigitalOcean)
 
-The adapters and normalizer aren't publicly reachable (see the topology
-table in [`hosting-and-deployment.md`](../tech-stack/hosting-and-deployment.md)),
-so only the apigateway target is checkable from outside Fly's private
-network. Run the script with just that target meaningfully populated, and
-rely on `flyctl` for the rest (next section):
+Since only the API Gateway and frontend are exposed publicly through Caddy (see the topology in [`hosting-and-deployment.md`](../tech-stack/hosting-and-deployment.md)), only the public API endpoints are checkable from outside the droplet. Run the script with the targets pointing to the public unified domain:
 
 ```sh
-APIGATEWAY_URL=https://sky-radar-apigateway.fly.dev \
-NORMALIZER_URL=https://sky-radar-apigateway.fly.dev \
-ADAPTER_OPENSKY_URL=https://sky-radar-apigateway.fly.dev \
-ADAPTER_ADSBLOL_URL=https://sky-radar-apigateway.fly.dev \
-ADAPTER_AIRPLANESLIVE_URL=https://sky-radar-apigateway.fly.dev \
+APIGATEWAY_URL=https://skyradar.swanathiyarath.com/api \
+NORMALIZER_URL=https://skyradar.swanathiyarath.com/api \
+ADAPTER_OPENSKY_URL=https://skyradar.swanathiyarath.com/api \
+ADAPTER_ADSBLOL_URL=https://skyradar.swanathiyarath.com/api \
+ADAPTER_AIRPLANESLIVE_URL=https://skyradar.swanathiyarath.com/api \
 ./scripts/soak-test.sh
 ```
 
@@ -101,24 +97,16 @@ script's uptime math meaningful instead of permanently red on targets it
 was never going to be able to reach; the apigateway-healthz and
 apigateway-flights lines are the ones that matter here.)
 
-In parallel, use Fly's own tooling for the internal services and for
-restart history:
+In parallel, SSH into the Droplet and use Docker Compose and Docker CLI tools to check internal service health and container status:
 
 ```sh
-flyctl machine list -a sky-radar-adapter-opensky        # one row per machine + state
-flyctl machine list -a sky-radar-adapter-adsblol
-flyctl machine list -a sky-radar-adapter-airplaneslive
-flyctl machine list -a sky-radar-normalizer
-flyctl machine status <machine-id> -a <app>             # per-machine event log (start/stop/restart, with timestamps)
-flyctl checks list -a sky-radar-apigateway               # Fly's own /healthz check history
+cd /root/sky-radar/deploy
+docker compose -f docker-compose.prod.yml ps             # Quick health check of running containers
+docker compose -f docker-compose.prod.yml ps -q | xargs docker inspect --format '{{.Name}}: {{.State.RestartCount}} restarts' # Inspect restart counts
+docker compose -f docker-compose.prod.yml logs --tail=50  # Inspects logs from the services
 ```
 
-The event log from `flyctl machine status` over the 24h window is the
-authoritative signal for "no manual restarts" in production: any
-start/stop/restart event in that window needs an explanation (a Fly-side
-health-check-triggered restart is acceptable and should also show up as a
-`DOWN`/`RECOVERED` pair in the soak script's log; a restart with no
-corresponding cause is the thing to investigate).
+Use `docker compose ps` as a quick health check of current container states and uptime. For a definitive "no manual restarts" signal, check the container restart count via `docker inspect` (as `ps` only shows the current status and can hide transient restarts). A restart count of `0` is the authoritative signal that no unexpected restarts occurred: any restart event in that window needs an explanation.
 
 ## Checking P1-FR2 (no sustained rate-limiting)
 
@@ -131,10 +119,9 @@ logged as structured JSON with the literal status code in the message
 # Local
 docker compose logs adapter-opensky adapter-adsblol adapter-airplaneslive | grep '"err":"[a-z.]*: status 429"'
 
-# Production
-flyctl logs -a sky-radar-adapter-opensky | grep 'status 429'
-flyctl logs -a sky-radar-adapter-adsblol | grep 'status 429'
-flyctl logs -a sky-radar-adapter-airplaneslive | grep 'status 429'
+# Production (SSH'ed into the Droplet)
+cd /root/sky-radar/deploy
+docker compose -f docker-compose.prod.yml logs --since 24h | grep 'status 429'
 ```
 
 A handful of isolated `429`s is expected (the backoff in

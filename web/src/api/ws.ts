@@ -42,6 +42,10 @@ const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 30_000;
 
 function wsURL(): string {
+  if (API_BASE_URL.startsWith("/")) {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${protocol}//${window.location.host}${API_BASE_URL}/ws`;
+  }
   return `${API_BASE_URL.replace(/^http/, "ws")}/ws`;
 }
 
