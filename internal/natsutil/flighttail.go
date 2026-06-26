@@ -72,7 +72,12 @@ func NewFlightStateResumeReader(ctx context.Context, js jetstream.JetStream, fro
 	if err != nil {
 		return nil, fmt.Errorf("natsutil: resume reader: stream info: %w", err)
 	}
-	if info.State.Msgs > 0 && fromSeq < info.State.FirstSeq-1 {
+	// Gate on FirstSeq > 0 rather than Msgs > 0: a stream that has been
+	// fully purged has Msgs == 0 but FirstSeq == LastSeq+1, and an old
+	// fromSeq must still be rejected in that case. FirstSeq == 0 only for a
+	// stream that has never had a message published, where there's no
+	// retention boundary to violate.
+	if info.State.FirstSeq > 0 && fromSeq < info.State.FirstSeq-1 {
 		return nil, ErrSequenceNotRetained
 	}
 

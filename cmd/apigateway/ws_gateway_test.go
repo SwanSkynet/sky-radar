@@ -12,10 +12,10 @@ import (
 
 	"github.com/SwanSkynet/sky-radar/internal/flightmodel"
 	"github.com/SwanSkynet/sky-radar/internal/natsutil"
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go/jetstream"
-	"nhooyr.io/websocket"
-	"nhooyr.io/websocket/wsjson"
 )
 
 // testWSEnv boots an in-process NATS server with JetStream, wires up a
@@ -135,7 +135,7 @@ func readFlightUpdate(t *testing.T, conn *websocket.Conn, timeout time.Duration)
 }
 
 // assertNoMoreMessages waits up to wait for another message on conn and
-// fails the test if one arrives. Per nhooyr.io/websocket's documented
+// fails the test if one arrives. Per github.com/coder/websocket's documented
 // behavior, a context-deadline read failure closes the connection, so
 // this must be the last thing a test does with conn.
 func assertNoMoreMessages(t *testing.T, conn *websocket.Conn, wait time.Duration) {
@@ -256,6 +256,82 @@ func TestWSResumeReplaysMissedUpdatesAfterReconnect(t *testing.T) {
 	}
 }
 
+func TestWSResumeReplayFiltersByClientViewport(t *testing.T) {
+	wsURL, pub, _ := testWSEnv(t)
+	ctx := context.Background()
+	sfBBox := []float64{-123, 36, -121, 38}
+
+	conn1 := dialWS(t, wsURL)
+	subscribe(t, conn1, sfBBox, nil)
+	ack := mustReadType(t, conn1, wsMsgTypeSubscribed)
+	if ack.Seq != 0 {
+		t.Fatalf("initial ack.Seq = %d, want 0 for an empty stream", ack.Seq)
+	}
+	_ = conn1.Close(websocket.StatusNormalClosure, "")
+
+	// Publish one in-viewport and one out-of-viewport update while
+	// disconnected.
+	if err := pub.PublishFlightState(ctx, sampleFlightAt("ny", 40.7, -74.0)); err != nil {
+		t.Fatalf("PublishFlightState: %v", err)
+	}
+	if err := pub.PublishFlightState(ctx, sampleFlightAt("sf", 37.0, -122.0)); err != nil {
+		t.Fatalf("PublishFlightState: %v", err)
+	}
+
+	conn2 := dialWS(t, wsURL)
+	fromSeq := uint64(0)
+	subscribe(t, conn2, sfBBox, &fromSeq)
+
+	// Only the in-viewport "sf" update should be replayed; "ny" is silently
+	// dropped, same as wsHub.broadcast would drop it on the live path.
+	got := readFlightUpdate(t, conn2, 3*time.Second)
+	if got.State.ICAO24 != "sf" {
+		t.Fatalf("ICAO24 = %q, want sf", got.State.ICAO24)
+	}
+
+	mustReadType(t, conn2, wsMsgTypeSubscribed)
+	assertNoMoreMessages(t, conn2, 300*time.Millisecond)
+}
+
+func TestWSResumeFailsWhenGapExceedsMaxBacklog(t *testing.T) {
+	wsURL, pub, _ := testWSEnv(t)
+	ctx := context.Background()
+	worldBBox := []float64{-180, -90, 180, 90}
+
+	origMax := wsMaxResumeBacklog
+	wsMaxResumeBacklog = 2
+	t.Cleanup(func() { wsMaxResumeBacklog = origMax })
+
+	for _, icao24 := range []string{"a", "b", "c"} {
+		if err := pub.PublishFlightState(ctx, sampleFlightAt(icao24, 0, 0)); err != nil {
+			t.Fatalf("PublishFlightState: %v", err)
+		}
+	}
+
+	conn := dialWS(t, wsURL)
+	fromSeq := uint64(0)
+	subscribe(t, conn, worldBBox, &fromSeq)
+
+	resumeFailed := readServerMessage(t, conn, 3*time.Second)
+	if resumeFailed.Type != wsMsgTypeResumeFailed {
+		t.Fatalf("message type = %q, want %q", resumeFailed.Type, wsMsgTypeResumeFailed)
+	}
+	if resumeFailed.Reason == "" {
+		t.Error("resume_failed message has no reason")
+	}
+
+	mustReadType(t, conn, wsMsgTypeSubscribed)
+
+	// The connection should still work for live updates after a failed resume.
+	if err := pub.PublishFlightState(ctx, sampleFlightAt("live-after-resume-failed", 0, 0)); err != nil {
+		t.Fatalf("PublishFlightState: %v", err)
+	}
+	got := readFlightUpdate(t, conn, 3*time.Second)
+	if got.State.ICAO24 != "live-after-resume-failed" {
+		t.Fatalf("ICAO24 = %q, want live-after-resume-failed", got.State.ICAO24)
+	}
+}
+
 func TestWSResumeFailedFallsBackToLiveOnlyWhenSequenceNotRetained(t *testing.T) {
 	wsURL, pub, js := testWSEnv(t)
 	ctx := context.Background()
@@ -308,7 +384,7 @@ func TestWSRejectsNonSubscribeFirstMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("websocket.Dial: %v", err)
 	}
-	defer conn.Close(websocket.StatusInternalError, "")
+	defer func() { _ = conn.Close(websocket.StatusInternalError, "") }()
 
 	if err := wsjson.Write(ctx, conn, wsClientMessage{Type: "bogus"}); err != nil {
 		t.Fatalf("wsjson.Write: %v", err)
@@ -330,7 +406,7 @@ func TestWSRejectsInvalidBBox(t *testing.T) {
 	if err != nil {
 		t.Fatalf("websocket.Dial: %v", err)
 	}
-	defer conn.Close(websocket.StatusInternalError, "")
+	defer func() { _ = conn.Close(websocket.StatusInternalError, "") }()
 
 	if err := wsjson.Write(ctx, conn, wsClientMessage{Type: wsMsgTypeSubscribe, BBox: []float64{1, 2, 3}}); err != nil {
 		t.Fatalf("wsjson.Write: %v", err)

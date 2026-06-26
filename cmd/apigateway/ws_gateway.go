@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/SwanSkynet/sky-radar/internal/natsutil"
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 	"github.com/nats-io/nats.go/jetstream"
-	"nhooyr.io/websocket"
-	"nhooyr.io/websocket/wsjson"
 )
 
 const (
@@ -24,6 +24,16 @@ const (
 	// JetStream to deliver the requested backlog before giving up.
 	wsBacklogFetchTimeout = 5 * time.Second
 )
+
+// wsMaxResumeBacklog caps how many messages a single resume replay will
+// fetch. Retention is time-based (see flightsUpdatesMaxAge), so a stale
+// fromSeq can still be "retained" but imply a gap of tens of thousands of
+// messages; without this cap that gap size drives an unbounded allocation
+// and replay burst. A resume whose gap exceeds it is treated the same as
+// one that's fallen out of retention: resume_failed, fall back to a full
+// reload. It's a var rather than a const so tests can shrink it instead of
+// publishing tens of thousands of messages to exercise the cap.
+var wsMaxResumeBacklog uint64 = 20000
 
 // wsGateway serves GET /ws: it accepts a WebSocket connection, registers
 // it with hub by viewport, optionally replays a resume gap from
@@ -47,7 +57,7 @@ func (g *wsGateway) handleWS(w http.ResponseWriter, r *http.Request) {
 		g.logger.Error("websocket accept failed", "err", err)
 		return
 	}
-	defer conn.CloseNow()
+	defer func() { _ = conn.CloseNow() }()
 
 	ctx := r.Context()
 	client, lastDeliveredSeq, err := g.handshake(ctx, conn)
@@ -100,7 +110,7 @@ func (g *wsGateway) handshake(ctx context.Context, conn *websocket.Conn) (*wsCli
 
 	lastDeliveredSeq := headSeq
 	if msg.ResumeFromSeq != nil {
-		lastDeliveredSeq, err = g.replayResume(ctx, conn, *msg.ResumeFromSeq, headSeq)
+		lastDeliveredSeq, err = g.replayResume(ctx, conn, client, *msg.ResumeFromSeq, headSeq)
 		if err != nil {
 			g.hub.unregister(client)
 			return nil, 0, err
@@ -116,15 +126,26 @@ func (g *wsGateway) handshake(ctx context.Context, conn *websocket.Conn) (*wsCli
 }
 
 // replayResume replays the gap between fromSeq (the sequence the client
-// already has) and headSeq (the stream's head at registration time). If
-// fromSeq is no longer retained, it writes a resume_failed message and
-// returns headSeq unchanged, telling the caller "nothing was replayed,
-// the client must fall back to a full reload" rather than treating that
-// as a connection-ending error — only a transport (write) failure is
-// returned as an error here.
-func (g *wsGateway) replayResume(ctx context.Context, conn *websocket.Conn, fromSeq, headSeq uint64) (uint64, error) {
+// already has) and headSeq (the stream's head at registration time),
+// writing only the entries that fall inside client's currently registered
+// viewport — the same filter wsHub.broadcast applies to live updates, so a
+// resume can't leak out-of-viewport state the live path would have
+// dropped. If fromSeq is no longer retained, or the gap exceeds
+// wsMaxResumeBacklog, it writes a resume_failed message and returns
+// headSeq unchanged, telling the caller "nothing was replayed, the client
+// must fall back to a full reload" rather than treating that as a
+// connection-ending error — only a transport (write) failure is returned
+// as an error here.
+func (g *wsGateway) replayResume(ctx context.Context, conn *websocket.Conn, client *wsClient, fromSeq, headSeq uint64) (uint64, error) {
 	if fromSeq >= headSeq {
 		return fromSeq, nil
+	}
+
+	if headSeq-fromSeq > wsMaxResumeBacklog {
+		if writeErr := wsjson.Write(ctx, conn, wsServerMessage{Type: wsMsgTypeResumeFailed, Reason: "resume gap exceeds maximum replay window"}); writeErr != nil {
+			return 0, fmt.Errorf("write resume_failed: %w", writeErr)
+		}
+		return headSeq, nil
 	}
 
 	reader, err := natsutil.NewFlightStateResumeReader(ctx, g.js, fromSeq)
@@ -153,6 +174,9 @@ func (g *wsGateway) replayResume(ctx context.Context, conn *websocket.Conn, from
 	}
 
 	for _, fsMsg := range backlog {
+		if !client.BBox().Contains(fsMsg.State.Lat, fsMsg.State.Lon) {
+			continue
+		}
 		if err := wsjson.Write(ctx, conn, wsServerMessage{Type: wsMsgTypeFlightUpdate, Seq: fsMsg.Sequence, State: &fsMsg.State}); err != nil {
 			return 0, fmt.Errorf("write resume backlog message: %w", err)
 		}

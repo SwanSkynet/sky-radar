@@ -225,3 +225,38 @@ func TestResumeReaderRejectsSequenceOlderThanRetention(t *testing.T) {
 		t.Fatalf("NewFlightStateResumeReader: err = %v, want ErrSequenceNotRetained", err)
 	}
 }
+
+func TestResumeReaderRejectsSequenceOlderThanRetentionWhenStreamFullyDrained(t *testing.T) {
+	url := startTestServer(t)
+	nc, err := Connect(url)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	t.Cleanup(nc.Close)
+	js, err := JetStream(nc)
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+	ctx := context.Background()
+	stream, err := EnsureFlightsUpdatesStream(ctx, js)
+	if err != nil {
+		t.Fatalf("EnsureFlightsUpdatesStream: %v", err)
+	}
+	pub := NewFlightStatePublisher(js)
+
+	for _, icao24 := range []string{"aaaaaa", "bbbbbb", "cccccc"} {
+		if err := pub.PublishFlightState(ctx, sampleState(icao24)); err != nil {
+			t.Fatalf("PublishFlightState: %v", err)
+		}
+	}
+
+	// Purge every retained message (no WithPurgeKeep), simulating retention
+	// having aged out the entire stream rather than just its oldest entries.
+	if err := stream.Purge(ctx); err != nil {
+		t.Fatalf("Purge: %v", err)
+	}
+
+	if _, err := NewFlightStateResumeReader(ctx, js, 1); !errors.Is(err, ErrSequenceNotRetained) {
+		t.Fatalf("NewFlightStateResumeReader: err = %v, want ErrSequenceNotRetained", err)
+	}
+}
