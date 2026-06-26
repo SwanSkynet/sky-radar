@@ -130,7 +130,7 @@ func TestQueryEventsFiltersByICAO24CaseInsensitive(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	icao24 := fmt.Sprintf("T%dAB", time.Now().UnixNano())
+	icao24 := fmt.Sprintf("t%dab", time.Now().UnixNano())
 	event := flightmodel.Event{
 		ID: flightmodel.NewEventID(), Type: flightmodel.EventTypeAltitudeDelta,
 		ICAO24: icao24, Severity: flightmodel.EventSeverityNotable, OccurredAtUTC: time.Now().UTC().Truncate(time.Microsecond),
