@@ -93,7 +93,7 @@ Public API v1 (`/api/v1`, see [`backend.md`](../tech-stack/backend.md)) has two 
 
 Both tiers share one mechanism — a Redis-backed token bucket (see the `ratelimit:*` keys above), implemented as a single atomic Lua script so it stays correct across multiple `apigateway` replicas (per [`backend.md`](../tech-stack/backend.md)'s "in Redis so it works across multiple gateway instances"). An exhausted bucket gets a `429` with a `Retry-After` header.
 
-```
+```text
 api_keys (durable, Postgres) {
   id: uuid
   key_hash: string      // SHA-256 hex digest of the raw key; the raw key itself is never stored

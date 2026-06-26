@@ -91,10 +91,15 @@ func newRouterWithExtras(api *flightsAPI, wsGW *wsGateway, replay *replayAPI, zo
 		v1Handler = auth.middleware(v1)
 	}
 
+	var openAPIHandler http.Handler = http.HandlerFunc(serveOpenAPISpec)
+	if auth != nil {
+		openAPIHandler = auth.rateLimitAnonymous(openAPIHandler)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", health.Live)
 	mux.HandleFunc("GET /readyz", health.Ready(api.redis))
-	mux.HandleFunc("GET /api/v1/openapi.yaml", serveOpenAPISpec)
+	mux.Handle("GET /api/v1/openapi.yaml", openAPIHandler)
 	mux.Handle(apiV1Prefix+"/", http.StripPrefix(apiV1Prefix, v1Handler))
 	return withCORS(mux)
 }
@@ -109,6 +114,12 @@ func newRouterWithExtras(api *flightsAPI, wsGW *wsGateway, replay *replayAPI, zo
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
+		// apiAuth.middleware's X-RateLimit-Limit, X-RateLimit-Remaining,
+		// and Retry-After are otherwise invisible to cross-origin
+		// JavaScript (the CORS-safelisted response header set doesn't
+		// include them), which would leave the Vite client unable to
+		// show callers their remaining budget or back off correctly.
+		w.Header().Set("Access-Control-Expose-Headers", "X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After")
 		if r.Method == http.MethodOptions {
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, "+sessionHeader+", "+apiKeyHeader)
@@ -258,18 +269,21 @@ func envString(key, fallback string) string {
 	return fallback
 }
 
-// envInt reads key as an integer, falling back to fallback if it's unset
-// or not a valid integer (logged via the package-level default logger
-// would require threading one through; an invalid rate-limit env var is
-// rare enough config error that failing closed to the documented default
-// is simpler and safer than partially wiring a logger just for this).
+// envInt reads key as a positive integer, falling back to fallback if it's
+// unset, not a valid integer, or not positive (logged via the
+// package-level default logger would require threading one through; an
+// invalid rate-limit env var is rare enough config error that failing
+// closed to the documented default is simpler and safer than partially
+// wiring a logger just for this). A non-positive value is rejected here
+// too since it would otherwise reach newTierLimit and produce a
+// zero-or-negative-capacity/refill token bucket.
 func envInt(key string, fallback int) int {
 	v := os.Getenv(key)
 	if v == "" {
 		return fallback
 	}
 	n, err := strconv.Atoi(v)
-	if err != nil {
+	if err != nil || n <= 0 {
 		return fallback
 	}
 	return n

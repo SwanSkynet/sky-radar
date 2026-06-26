@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
   id uuid PRIMARY KEY,
   key_hash text NOT NULL UNIQUE,
   label text NOT NULL,
-  tier text NOT NULL,
+  tier text NOT NULL CHECK (tier IN ('anonymous', 'elevated')),
   created_at timestamptz NOT NULL DEFAULT now(),
   revoked_at timestamptz
 );

@@ -85,6 +85,10 @@ type TokenBucketResult struct {
 // yet starts full (capacity tokens), so the first request against a new
 // key is always allowed.
 func (c *Client) AllowTokenBucket(ctx context.Context, key string, capacity int, refillPerSec float64) (TokenBucketResult, error) {
+	if capacity <= 0 || refillPerSec <= 0 {
+		return TokenBucketResult{}, fmt.Errorf("redisutil: token bucket %s: capacity (%d) and refillPerSec (%g) must both be positive", key, capacity, refillPerSec)
+	}
+
 	res, err := rateLimitScript.Run(ctx, c.rdb, []string{key}, capacity, refillPerSec, rateLimitBucketTTL.Milliseconds()).Slice()
 	if err != nil {
 		return TokenBucketResult{}, fmt.Errorf("redisutil: token bucket %s: %w", key, err)

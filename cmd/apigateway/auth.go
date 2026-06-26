@@ -86,23 +86,17 @@ func (a *apiAuth) middleware(next http.Handler) http.Handler {
 				writeError(w, http.StatusInternalServerError, "failed to validate API key")
 				return
 			}
-			limit = a.elevatedLimit
-			bucketKey = "ratelimit:key:" + key.ID
+			// Only an elevated-tier key promotes the request to the
+			// elevated bucket — an anonymous-tier key is still a valid
+			// credential (e.g. for attribution), but stays on the same
+			// per-IP bucket/limit as an unauthenticated request.
+			if key.Tier == string(tierElevated) {
+				limit = a.elevatedLimit
+				bucketKey = "ratelimit:key:" + key.ID
+			}
 		}
 
-		result, err := a.redis.AllowTokenBucket(r.Context(), bucketKey, limit.capacity, limit.refillPerSec)
-		if err != nil {
-			a.logger.Error("rate limit check failed", "err", err)
-			writeError(w, http.StatusInternalServerError, "rate limit check failed")
-			return
-		}
-
-		w.Header().Set("X-RateLimit-Limit", strconv.Itoa(limit.capacity))
-		w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(result.Remaining))
-		if !result.Allowed {
-			retryAfterSec := int(math.Ceil(result.RetryAfter.Seconds()))
-			w.Header().Set("Retry-After", strconv.Itoa(retryAfterSec))
-			writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
+		if !a.enforceLimit(w, r, limit, bucketKey) {
 			return
 		}
 
@@ -110,16 +104,56 @@ func (a *apiAuth) middleware(next http.Handler) http.Handler {
 	})
 }
 
+// rateLimitAnonymous wraps next with only the anonymous-tier per-IP rate
+// limit, skipping API-key lookup entirely. It's for routes — like the
+// published OpenAPI spec — that must stay reachable without a key but
+// shouldn't be exempt from abuse protection.
+func (a *apiAuth) rateLimitAnonymous(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !a.enforceLimit(w, r, a.anonymousLimit, "ratelimit:ip:"+clientIP(r)) {
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// enforceLimit checks the token bucket for limit/bucketKey, setting the
+// X-RateLimit-* response headers in all cases. It returns false (having
+// already written a 429 or 500 response) when the caller must not proceed.
+func (a *apiAuth) enforceLimit(w http.ResponseWriter, r *http.Request, limit tierLimit, bucketKey string) bool {
+	result, err := a.redis.AllowTokenBucket(r.Context(), bucketKey, limit.capacity, limit.refillPerSec)
+	if err != nil {
+		a.logger.Error("rate limit check failed", "err", err)
+		writeError(w, http.StatusInternalServerError, "rate limit check failed")
+		return false
+	}
+
+	w.Header().Set("X-RateLimit-Limit", strconv.Itoa(limit.capacity))
+	w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(result.Remaining))
+	if !result.Allowed {
+		retryAfterSec := int(math.Ceil(result.RetryAfter.Seconds()))
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfterSec))
+		writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
+		return false
+	}
+	return true
+}
+
 // clientIP returns the request's originating client address, used as the
 // anonymous-tier rate-limit bucket key. apigateway only ever receives
 // traffic via Caddy on the documented deployment topology (see
 // docs/tech-stack/hosting-and-deployment.md: only Caddy's ports are
-// publicly exposed), so the reverse proxy's X-Forwarded-For is trustworthy
-// here; RemoteAddr is the fallback for direct (e.g. local dev) traffic.
+// publicly exposed), and Caddy's reverse_proxy appends the address it
+// actually accepted the connection from as the last X-Forwarded-For
+// element — so the last element is the one hop we trust; any earlier
+// elements are caller-supplied and must not be used as the rate-limit
+// identity, or a client could spoof a fresh bucket on every request by
+// sending its own X-Forwarded-For. RemoteAddr is the fallback for direct
+// (e.g. local dev) traffic with no proxy in front at all.
 func clientIP(r *http.Request) string {
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if i := strings.IndexByte(xff, ','); i >= 0 {
-			return strings.TrimSpace(xff[:i])
+		if i := strings.LastIndexByte(xff, ','); i >= 0 {
+			return strings.TrimSpace(xff[i+1:])
 		}
 		return strings.TrimSpace(xff)
 	}

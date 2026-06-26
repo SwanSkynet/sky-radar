@@ -82,13 +82,27 @@ func TestDistinctIPsGetIndependentAnonymousBuckets(t *testing.T) {
 	}
 }
 
-func TestClientIPPrefersForwardedForHeader(t *testing.T) {
+func TestClientIPUsesLastForwardedForHopNotCallerSuppliedPrefix(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "192.0.2.1:1234"
-	req.Header.Set("X-Forwarded-For", "203.0.113.5, 192.0.2.1")
+	// Caddy appends the address it accepted the connection from as the
+	// last element; "203.0.113.5" here is attacker-supplied and must be
+	// ignored, or a client could spoof a fresh rate-limit bucket per
+	// request just by varying this header.
+	req.Header.Set("X-Forwarded-For", "203.0.113.5, 198.51.100.9")
 
-	if got := clientIP(req); got != "203.0.113.5" {
-		t.Fatalf("clientIP = %q, want %q", got, "203.0.113.5")
+	if got := clientIP(req); got != "198.51.100.9" {
+		t.Fatalf("clientIP = %q, want %q (trusted proxy-appended hop)", got, "198.51.100.9")
+	}
+}
+
+func TestClientIPUsesSoleForwardedForValue(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "192.0.2.1:1234"
+	req.Header.Set("X-Forwarded-For", "198.51.100.9")
+
+	if got := clientIP(req); got != "198.51.100.9" {
+		t.Fatalf("clientIP = %q, want %q", got, "198.51.100.9")
 	}
 }
 
@@ -124,6 +138,30 @@ func TestValidAPIKeyUsesElevatedTierAndOwnBucket(t *testing.T) {
 	}
 	if got := rec.Header().Get("X-RateLimit-Limit"); got != "5" {
 		t.Fatalf("X-RateLimit-Limit = %q, want %q (elevated tier)", got, "5")
+	}
+}
+
+func TestAnonymousTierAPIKeyKeepsAnonymousLimitAndBucket(t *testing.T) {
+	mux, pg := newAuthTestRouter(t, 1, 5)
+
+	rawKey, err := issueAPIKey(context.Background(), pg, "test-anonymous-key", tierAnonymous)
+	if err != nil {
+		t.Fatalf("issueAPIKey: %v", err)
+	}
+
+	rec := doFlightsRequest(mux, "203.0.113.10:1", map[string]string{apiKeyHeader: rawKey})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-RateLimit-Limit"); got != "1" {
+		t.Fatalf("X-RateLimit-Limit = %q, want %q (anonymous tier, not promoted)", got, "1")
+	}
+
+	// An anonymous-tier key shares its bucket with plain anonymous requests
+	// from the same IP, so it must not get its own elevated-style headroom.
+	rec = doFlightsRequest(mux, "203.0.113.10:1", nil)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429 (shared per-IP bucket already spent)", rec.Code)
 	}
 }
 

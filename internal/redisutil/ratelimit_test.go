@@ -70,6 +70,21 @@ func TestAllowTokenBucketRefillsOverTime(t *testing.T) {
 	}
 }
 
+func TestAllowTokenBucketRejectsNonPositiveCapacityOrRefill(t *testing.T) {
+	c, _ := newTestClientWithServer(t)
+	ctx := context.Background()
+
+	if _, err := c.AllowTokenBucket(ctx, "ratelimit:bad-capacity", 0, 1); err == nil {
+		t.Fatal("AllowTokenBucket with capacity=0: want error, got nil")
+	}
+	if _, err := c.AllowTokenBucket(ctx, "ratelimit:bad-refill", 1, 0); err == nil {
+		t.Fatal("AllowTokenBucket with refillPerSec=0: want error, got nil")
+	}
+	if _, err := c.AllowTokenBucket(ctx, "ratelimit:negative", -1, -1); err == nil {
+		t.Fatal("AllowTokenBucket with negative capacity/refillPerSec: want error, got nil")
+	}
+}
+
 func TestAllowTokenBucketDistinctKeysDoNotShareState(t *testing.T) {
 	c, _ := newTestClientWithServer(t)
 	ctx := context.Background()

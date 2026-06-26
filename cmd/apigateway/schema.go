@@ -14,9 +14,10 @@ import (
 var openAPISpecYAML []byte
 
 // serveOpenAPISpec handles GET /api/v1/openapi.yaml. It is intentionally
-// outside apiAuth's middleware (see newRouterWithExtras): a caller has to
-// be able to fetch the schema before it can know how auth/rate limiting
-// even work.
+// outside apiAuth's full middleware (see newRouterWithExtras) — a caller
+// has to be able to fetch the schema before it can know how auth/rate
+// limiting even work — but it's still wrapped in apiAuth.rateLimitAnonymous
+// so it isn't an unthrottled hole in the per-IP abuse protection.
 func serveOpenAPISpec(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/yaml")
 	w.WriteHeader(http.StatusOK)
