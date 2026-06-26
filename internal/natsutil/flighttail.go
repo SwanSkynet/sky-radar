@@ -19,12 +19,15 @@ import (
 var ErrSequenceNotRetained = errors.New("natsutil: requested sequence is no longer retained")
 
 // FlightStateMessage pairs a decoded FlightState with the JetStream stream
-// sequence number it was delivered at. The API gateway hands this sequence
-// back to clients so a reconnecting client can ask to resume from exactly
-// where it left off (see docs/prd/phase-2-realtime-systems.md P2-FR4).
+// sequence number and original publish timestamp it was delivered at. The
+// API gateway hands the sequence back to clients so a reconnecting client
+// can ask to resume from exactly where it left off (see
+// docs/prd/phase-2-realtime-systems.md P2-FR4); the timestamp is what the
+// replay window (P2-FR5) windows samples by.
 type FlightStateMessage struct {
-	Sequence uint64
-	State    flightmodel.FlightState
+	Sequence  uint64
+	Timestamp time.Time
+	State     flightmodel.FlightState
 }
 
 // FlightStateTailHandler is invoked once per decoded FlightStateMessage
@@ -89,6 +92,42 @@ func NewFlightStateResumeReader(ctx context.Context, js jetstream.JetStream, fro
 		return nil, fmt.Errorf("natsutil: resume reader: %w", err)
 	}
 	return &FlightStateTailReader{consumer: consumer}, nil
+}
+
+// NewFlightStateReplayReader creates an ephemeral ordered consumer that
+// delivers messages starting at or after from, backing the frontend's
+// replay scrubber (see docs/prd/phase-2-realtime-systems.md P2-FR5).
+// Unlike NewFlightStateResumeReader, a from time older than every message
+// still retained is not an error: JetStream simply starts delivery at the
+// oldest retained message instead. Reconstructing movement further back
+// than that is Postgres flight_history's job, not this stream's, per
+// docs/tech-stack/data-and-messaging.md's downsampled-history trade-off —
+// the caller is expected to fall back to flight_history for the part of
+// the requested window this reader can't cover.
+func NewFlightStateReplayReader(ctx context.Context, js jetstream.JetStream, from time.Time) (*FlightStateTailReader, error) {
+	consumer, err := js.OrderedConsumer(ctx, StreamFlightsUpdates, jetstream.OrderedConsumerConfig{
+		DeliverPolicy: jetstream.DeliverByStartTimePolicy,
+		OptStartTime:  &from,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("natsutil: replay reader: %w", err)
+	}
+	return &FlightStateTailReader{consumer: consumer}, nil
+}
+
+// PendingCount reports how many messages this reader has not yet
+// delivered. For a freshly created NewFlightStateReplayReader this is the
+// exact number of messages between its start point and the stream's
+// current head, so the caller can size a single FetchBacklog call
+// precisely instead of guessing a batch size and idling out
+// FetchMaxWait waiting for messages that were never going to arrive — the
+// same problem FlightsUpdatesHeadSequence solves for resume replay.
+func (r *FlightStateTailReader) PendingCount(ctx context.Context) (uint64, error) {
+	info, err := r.consumer.Info(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("natsutil: pending count: %w", err)
+	}
+	return info.NumPending, nil
 }
 
 // FlightsUpdatesHeadSequence returns the sequence number of the most
@@ -177,5 +216,5 @@ func decodeFlightStateMessage(msg jetstream.Msg, onErr func(error)) (FlightState
 		}
 		return FlightStateMessage{}, false
 	}
-	return FlightStateMessage{Sequence: meta.Sequence.Stream, State: state}, true
+	return FlightStateMessage{Sequence: meta.Sequence.Stream, Timestamp: meta.Timestamp, State: state}, true
 }
