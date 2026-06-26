@@ -122,7 +122,11 @@ func commitAndPush(ctx context.Context, root, branch, message string) error {
 }
 
 // commitIfChanged commits staged changes, tolerating only the no-op case
-// where there's nothing to commit (e.g. Claude produced no net diff).
+// where there's nothing to commit (e.g. Claude produced no net diff). Git
+// phrases that two different ways depending on whether the working tree
+// has zero local changes ("nothing to commit, working tree clean") or has
+// changes that just weren't staged - e.g. an excluded automation/ edit
+// sitting alongside a no-op product change ("no changes added to commit").
 // Real failures (hook rejections, lock contention, bad config) are
 // propagated instead of being swallowed.
 func commitIfChanged(ctx context.Context, dir, message string) error {
@@ -130,7 +134,8 @@ func commitIfChanged(ctx context.Context, dir, message string) error {
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	os.Stdout.Write(out)
-	if err != nil && !strings.Contains(string(out), "nothing to commit") {
+	noop := strings.Contains(string(out), "nothing to commit") || strings.Contains(string(out), "no changes added to commit")
+	if err != nil && !noop {
 		return fmt.Errorf("git commit: %w", err)
 	}
 	return nil
