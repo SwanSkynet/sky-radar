@@ -297,13 +297,14 @@ func TestEventSubscriberDeliversEvent(t *testing.T) {
 	defer cancel()
 
 	go func() {
-		_ = sub.Run(runCtx, nil, func(event flightmodel.Event) {
+		_ = sub.Run(runCtx, nil, func(event flightmodel.Event) error {
 			mu.Lock()
 			if got == nil {
 				got = &event
 				close(done)
 			}
 			mu.Unlock()
+			return nil
 		})
 	}()
 
@@ -365,13 +366,14 @@ func TestEventSubscriberSkipsMalformedMessages(t *testing.T) {
 			mu.Lock()
 			decodeErrs++
 			mu.Unlock()
-		}, func(event flightmodel.Event) {
+		}, func(event flightmodel.Event) error {
 			mu.Lock()
 			if got == nil {
 				got = &event
 				close(done)
 			}
 			mu.Unlock()
+			return nil
 		})
 	}()
 

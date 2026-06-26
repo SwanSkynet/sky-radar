@@ -10,8 +10,9 @@ import (
 )
 
 // EventHandler is invoked once per decoded Event delivered to an
-// EventSubscriber.
-type EventHandler func(flightmodel.Event)
+// EventSubscriber. A non-nil return causes the message to be redelivered
+// rather than acknowledged.
+type EventHandler func(flightmodel.Event) error
 
 // EventSubscriber is a durable JetStream consumer of SubjectEventsDetected.
 // Each consumer name tracks its own delivery position on the stream,
@@ -45,10 +46,12 @@ func NewEventSubscriber(ctx context.Context, js jetstream.JetStream, consumerNam
 }
 
 // Run decodes each message delivered to this subscriber into an Event and
-// passes it to handler, acknowledging the message afterward. A message
-// that fails to decode is reported to onErr (if non-nil) and acked rather
-// than redelivered forever, mirroring FlightStateSubscriber.Run. Run
-// blocks until ctx is done.
+// passes it to handler. A message that fails to decode is reported to
+// onErr (if non-nil) and acked rather than redelivered forever, mirroring
+// FlightStateSubscriber.Run. A message whose handler returns an error is
+// reported to onErr and Nak'd so JetStream redelivers it instead of losing
+// it; only a successful handler call acknowledges the message. Run blocks
+// until ctx is done.
 func (s *EventSubscriber) Run(ctx context.Context, onErr func(error), handler EventHandler) error {
 	consumeCtx, err := s.consumer.Consume(func(msg jetstream.Msg) {
 		var event flightmodel.Event
@@ -61,7 +64,15 @@ func (s *EventSubscriber) Run(ctx context.Context, onErr func(error), handler Ev
 			}
 			return
 		}
-		handler(event)
+		if err := handler(event); err != nil {
+			if onErr != nil {
+				onErr(fmt.Errorf("natsutil: handle event: %w", err))
+			}
+			if nakErr := msg.Nak(); nakErr != nil && onErr != nil {
+				onErr(fmt.Errorf("natsutil: nak message: %w", nakErr))
+			}
+			return
+		}
 		if ackErr := msg.Ack(); ackErr != nil && onErr != nil {
 			onErr(fmt.Errorf("natsutil: ack message: %w", ackErr))
 		}

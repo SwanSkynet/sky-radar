@@ -1,9 +1,11 @@
-// Command pgstorewriter is a stateless consumer of flights.updates and
-// events.detected that persists a downsampled flight_history row per
-// aircraft and a durable events row per detected Event to Postgres. It is
-// the "pgstore-writer" component in
-// docs/architecture/system-architecture.md, kept separate from event
-// evaluation (cmd/eventengine) per docs/tech-stack/backend.md.
+// Command pgstorewriter consumes flights.updates and events.detected,
+// persisting a downsampled flight_history row per aircraft and a durable
+// events row per detected Event to Postgres. It is the "pgstore-writer"
+// component in docs/architecture/system-architecture.md, kept separate
+// from event evaluation (cmd/eventengine) per docs/tech-stack/backend.md.
+// Its downsampling bookkeeping is in-memory hot state local to this
+// process (see internal/pgstorewriter's package doc), not externalized to
+// Redis.
 package main
 
 import (
@@ -163,12 +165,13 @@ func main() {
 	go func() {
 		if err := eventSub.Run(ctx, func(err error) {
 			logger.Error("decode event failed", "err", err)
-		}, func(event flightmodel.Event) {
+		}, func(event flightmodel.Event) error {
 			if err := eventWriter.Observe(ctx, event); err != nil {
 				logger.Error("write event failed", "icao24", event.ICAO24, "type", event.Type, "err", err)
-				return
+				return err
 			}
 			logger.Info("event written", "icao24", event.ICAO24, "type", event.Type)
+			return nil
 		}); err != nil {
 			logger.Error("events.detected subscriber stopped", "err", err)
 			os.Exit(1)

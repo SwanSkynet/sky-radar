@@ -52,6 +52,12 @@ func TestInsertFlightHistoryWritesRow(t *testing.T) {
 	if gotAltitude != altitude {
 		t.Errorf("altitude_baro_ft = %d, want %d", gotAltitude, altitude)
 	}
+	if gotSpeed != speed {
+		t.Errorf("ground_speed_kt = %v, want %v", gotSpeed, speed)
+	}
+	if gotHeading != heading {
+		t.Errorf("heading_deg = %v, want %v", gotHeading, heading)
+	}
 	if gotOnGround {
 		t.Errorf("on_ground = true, want false")
 	}

@@ -39,16 +39,23 @@ func NewHistoryWriter(store *pgstore.Store, interval time.Duration) *HistoryWrit
 // Interval has elapsed (by state.LastSeenUTC, not wall-clock time) since
 // the last row written for this icao24. It returns (false, nil) when the
 // update was skipped as part of normal downsampling rather than failed.
+//
+// The gate check and lastSeen reservation happen under a single lock so
+// concurrent calls for the same icao24 cannot both pass the gate and
+// double-insert; on insert failure the reservation is rolled back so the
+// next call can retry.
 func (w *HistoryWriter) Observe(ctx context.Context, state flightmodel.FlightState) (bool, error) {
 	icao24 := state.ICAO24
 	now := state.LastSeenUTC
 
 	w.mu.Lock()
 	last, ok := w.lastSeen[icao24]
-	w.mu.Unlock()
 	if ok && now.Sub(last) < w.interval {
+		w.mu.Unlock()
 		return false, nil
 	}
+	w.lastSeen[icao24] = now
+	w.mu.Unlock()
 
 	rec := pgstore.FlightHistoryRecord{
 		ICAO24:         icao24,
@@ -61,12 +68,18 @@ func (w *HistoryWriter) Observe(ctx context.Context, state flightmodel.FlightSta
 		OnGround:       state.OnGround,
 	}
 	if err := w.store.InsertFlightHistory(ctx, rec); err != nil {
+		w.mu.Lock()
+		if w.lastSeen[icao24] == now {
+			if ok {
+				w.lastSeen[icao24] = last
+			} else {
+				delete(w.lastSeen, icao24)
+			}
+		}
+		w.mu.Unlock()
 		return false, err
 	}
 
-	w.mu.Lock()
-	w.lastSeen[icao24] = now
-	w.mu.Unlock()
 	return true, nil
 }
 
