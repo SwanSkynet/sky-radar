@@ -73,6 +73,19 @@ func (d *GeofenceDetector) Observe(state flightmodel.FlightState) []flightmodel.
 	return events
 }
 
+// SetZones replaces the zone set Observe evaluates against, so a
+// long-running engine process picks up zones created/deleted through the
+// API without a restart (see runZonesWatchlistRefreshLoop in main.go). Any
+// per-aircraft containment state already recorded for a zone ID that's no
+// longer present is left in place rather than pruned: it's harmless (no
+// future Observe call can match against a missing zone) and EvictBefore's
+// existing time-based cleanup already bounds its growth.
+func (d *GeofenceDetector) SetZones(zones []flightmodel.Zone) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.zones = zones
+}
+
 // EvictBefore removes tracked containment state for aircraft last observed
 // before cutoff, bounding inside's growth for aircraft that have gone
 // silent rather than retaining every ICAO24 ever seen for the life of the

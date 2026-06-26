@@ -18,13 +18,21 @@ import (
 
 	"github.com/SwanSkynet/sky-radar/internal/flightmodel"
 	"github.com/SwanSkynet/sky-radar/internal/natsutil"
+	"github.com/SwanSkynet/sky-radar/internal/pgstore"
 )
 
 const (
 	serviceName = "eventengine"
 	defaultPort = "8085"
 
-	defaultNATSURL = "nats://localhost:4222"
+	defaultNATSURL     = "nats://localhost:4222"
+	defaultDatabaseURL = "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"
+
+	// defaultZonesWatchlistRefreshInterval bounds how stale the engine's
+	// view of Postgres-persisted zones/watchlist entries can be: a zone or
+	// watchlist entry created or deleted through the API takes effect in
+	// the running engine within this interval, without a restart.
+	defaultZonesWatchlistRefreshInterval = 10 * time.Second
 
 	// consumerName is this service's durable JetStream consumer name on
 	// the FLIGHTS_UPDATES stream, distinct from any other subscriber (e.g.
@@ -110,6 +118,18 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	pg, err := pgstore.Connect(ctx, envString("DATABASE_URL", defaultDatabaseURL))
+	if err != nil {
+		logger.Error("postgres connect failed", "err", err)
+		os.Exit(1)
+	}
+	defer pg.Close()
+
+	if err := pg.Migrate(ctx); err != nil {
+		logger.Error("postgres migrate failed", "err", err)
+		os.Exit(1)
+	}
+
 	nc, err := natsutil.Connect(envString("NATS_URL", defaultNATSURL))
 	if err != nil {
 		logger.Error("nats connect failed", "err", err)
@@ -159,6 +179,9 @@ func main() {
 		os.Exit(1)
 	}
 	watchlistDetector := NewWatchlistDetector(watchlistEntries)
+
+	zonesWatchlistRefreshInterval := envDuration(logger, "ZONES_WATCHLIST_REFRESH_INTERVAL_SECONDS", defaultZonesWatchlistRefreshInterval)
+	go runZonesWatchlistRefreshLoop(ctx, logger, pg, geofenceDetector, watchlistDetector, zones, watchlistEntries, zonesWatchlistRefreshInterval)
 
 	go func() {
 		if err := subscriber.Run(ctx, func(err error) {
@@ -243,6 +266,92 @@ func logFlightUpdate(logger *slog.Logger, state flightmodel.FlightState) {
 		callsign = *state.Callsign
 	}
 	logger.Info("received flight update", "icao24", state.ICAO24, "callsign", callsign)
+}
+
+// runZonesWatchlistRefreshLoop periodically re-reads zones and watchlist
+// entries from Postgres and pushes them into geofenceDetector and
+// watchlistDetector via SetZones/SetEntries, so a zone or watchlist entry
+// created/deleted through the apigateway REST endpoints takes effect in
+// this running engine process within interval, without a restart (see
+// docs/prd/phase-2-realtime-systems.md: "Watchlists and geofences persist
+// and drive matching behavior"). envZones/envEntries (the
+// GEOFENCE_ZONES_JSON/WATCHLIST_ENTRIES_JSON-sourced startup seed) are
+// merged in on every refresh so an operator who configures one of those
+// env vars doesn't lose it the moment Postgres has its own rows.
+// A failed Postgres read is logged and the existing in-memory zones/entries
+// are left as-is rather than cleared, mirroring runStaleSweepLoop's
+// transient-failure handling.
+func runZonesWatchlistRefreshLoop(ctx context.Context, logger *slog.Logger, pg *pgstore.Store, geofenceDetector *GeofenceDetector, watchlistDetector *WatchlistDetector, envZones []flightmodel.Zone, envEntries []flightmodel.WatchlistEntry, interval time.Duration) {
+	refreshZonesWatchlist(ctx, logger, pg, geofenceDetector, watchlistDetector, envZones, envEntries)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			refreshZonesWatchlist(ctx, logger, pg, geofenceDetector, watchlistDetector, envZones, envEntries)
+		}
+	}
+}
+
+// refreshZonesWatchlistTimeout bounds a single refreshZonesWatchlist pass so
+// a hung or slow Postgres read fails fast and retries on the next tick,
+// instead of stalling on the service's long-lived root context.
+const refreshZonesWatchlistTimeout = 5 * time.Second
+
+// refreshZonesWatchlist performs a single read-from-Postgres-and-push pass
+// for runZonesWatchlistRefreshLoop, pulled out so tests can exercise one
+// pass directly without waiting on the loop's ticker.
+func refreshZonesWatchlist(ctx context.Context, logger *slog.Logger, pg *pgstore.Store, geofenceDetector *GeofenceDetector, watchlistDetector *WatchlistDetector, envZones []flightmodel.Zone, envEntries []flightmodel.WatchlistEntry) {
+	ctx, cancel := context.WithTimeout(ctx, refreshZonesWatchlistTimeout)
+	defer cancel()
+
+	if zones, err := pg.ListAllZones(ctx); err != nil {
+		logger.Error("refresh zones from postgres failed", "err", err)
+	} else {
+		geofenceDetector.SetZones(mergeZones(envZones, zones))
+	}
+	if entries, err := pg.ListAllWatchlistEntries(ctx); err != nil {
+		logger.Error("refresh watchlist entries from postgres failed", "err", err)
+	} else {
+		watchlistDetector.SetEntries(mergeWatchlistEntries(envEntries, entries))
+	}
+}
+
+// mergeZones unions base and overlay by ID, with overlay's entry winning on
+// a matching ID. base is the env-seeded startup list, overlay is the
+// latest Postgres read.
+func mergeZones(base, overlay []flightmodel.Zone) []flightmodel.Zone {
+	byID := make(map[string]flightmodel.Zone, len(base)+len(overlay))
+	for _, z := range base {
+		byID[z.ID] = z
+	}
+	for _, z := range overlay {
+		byID[z.ID] = z
+	}
+	merged := make([]flightmodel.Zone, 0, len(byID))
+	for _, z := range byID {
+		merged = append(merged, z)
+	}
+	return merged
+}
+
+// mergeWatchlistEntries is mergeZones's counterpart for watchlist entries.
+func mergeWatchlistEntries(base, overlay []flightmodel.WatchlistEntry) []flightmodel.WatchlistEntry {
+	byID := make(map[string]flightmodel.WatchlistEntry, len(base)+len(overlay))
+	for _, e := range base {
+		byID[e.ID] = e
+	}
+	for _, e := range overlay {
+		byID[e.ID] = e
+	}
+	merged := make([]flightmodel.WatchlistEntry, 0, len(byID))
+	for _, e := range byID {
+		merged = append(merged, e)
+	}
+	return merged
 }
 
 // runStaleSweepLoop periodically sweeps detector for aircraft that have

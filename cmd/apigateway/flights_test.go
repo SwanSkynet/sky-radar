@@ -112,6 +112,148 @@ func TestListFlightsReturnsEmptyArrayWhenNoneMatch(t *testing.T) {
 	}
 }
 
+func TestListFlightsFiltersByCallsignSubstringCaseInsensitive(t *testing.T) {
+	api, redisClient := testAPI(t)
+	ctx := t.Context()
+
+	united := "UAL123"
+	delta := "DAL456"
+	for _, s := range []flightmodel.FlightState{
+		{ICAO24: "aaaaaa", Callsign: &united, Lat: 37.0, Lon: -122.0, PositionQuality: flightmodel.PositionQualityADSB, LastSeenUTC: time.Now().UTC()},
+		{ICAO24: "bbbbbb", Callsign: &delta, Lat: 37.1, Lon: -122.1, PositionQuality: flightmodel.PositionQualityADSB, LastSeenUTC: time.Now().UTC()},
+	} {
+		if err := redisClient.WriteFlightState(ctx, s, time.Minute); err != nil {
+			t.Fatalf("WriteFlightState(%s): %v", s.ICAO24, err)
+		}
+	}
+
+	mux := newRouter(api, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/flights?bbox=-123,36,-121,38&callsign=ual", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var got []flightmodel.FlightState
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if len(got) != 1 || got[0].ICAO24 != "aaaaaa" {
+		t.Fatalf("got %+v, want exactly aaaaaa (callsign filter ual)", got)
+	}
+}
+
+func TestListFlightsFiltersByAltitudeBand(t *testing.T) {
+	api, redisClient := testAPI(t)
+	ctx := t.Context()
+
+	low, high := 5000, 35000
+	for _, s := range []flightmodel.FlightState{
+		{ICAO24: "aaaaaa", AltitudeBaroFt: &low, Lat: 37.0, Lon: -122.0, PositionQuality: flightmodel.PositionQualityADSB, LastSeenUTC: time.Now().UTC()},
+		{ICAO24: "bbbbbb", AltitudeBaroFt: &high, Lat: 37.1, Lon: -122.1, PositionQuality: flightmodel.PositionQualityADSB, LastSeenUTC: time.Now().UTC()},
+		{ICAO24: "cccccc", Lat: 37.2, Lon: -122.2, PositionQuality: flightmodel.PositionQualityADSB, LastSeenUTC: time.Now().UTC()}, // no altitude reported
+	} {
+		if err := redisClient.WriteFlightState(ctx, s, time.Minute); err != nil {
+			t.Fatalf("WriteFlightState(%s): %v", s.ICAO24, err)
+		}
+	}
+
+	mux := newRouter(api, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/flights?bbox=-123,36,-121,38&min_altitude_ft=10000&max_altitude_ft=40000", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var got []flightmodel.FlightState
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if len(got) != 1 || got[0].ICAO24 != "bbbbbb" {
+		t.Fatalf("got %+v, want exactly bbbbbb (altitude band 10000-40000)", got)
+	}
+}
+
+func TestListFlightsFiltersByRemainingFields(t *testing.T) {
+	reg1, reg2 := "N12345", "N67890"
+	speed1, speed2 := 250.0, 450.0
+	states := []flightmodel.FlightState{
+		{ICAO24: "aaaaaa", Registration: &reg1, GroundSpeedKt: &speed1, Lat: 37.0, Lon: -122.0, PositionQuality: flightmodel.PositionQualityADSB, LastSeenUTC: time.Now().UTC()},
+		{ICAO24: "bbbbbb", Registration: &reg2, GroundSpeedKt: &speed2, Lat: 37.1, Lon: -122.1, PositionQuality: flightmodel.PositionQualityADSB, LastSeenUTC: time.Now().UTC()},
+	}
+
+	tests := []struct {
+		name       string
+		query      string
+		wantICAO24 string
+	}{
+		{name: "registration substring case-insensitive", query: "registration=n123", wantICAO24: "aaaaaa"},
+		{name: "icao24 substring", query: "icao24=bbb", wantICAO24: "bbbbbb"},
+		{name: "min_speed_kt excludes slower aircraft", query: "min_speed_kt=300", wantICAO24: "bbbbbb"},
+		{name: "max_speed_kt excludes faster aircraft", query: "max_speed_kt=300", wantICAO24: "aaaaaa"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			api, redisClient := testAPI(t)
+			ctx := t.Context()
+			for _, s := range states {
+				if err := redisClient.WriteFlightState(ctx, s, time.Minute); err != nil {
+					t.Fatalf("WriteFlightState(%s): %v", s.ICAO24, err)
+				}
+			}
+
+			mux := newRouter(api, nil, nil)
+			req := httptest.NewRequest(http.MethodGet, "/flights?bbox=-123,36,-121,38&"+tt.query, nil)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+			var got []flightmodel.FlightState
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if len(got) != 1 || got[0].ICAO24 != tt.wantICAO24 {
+				t.Fatalf("got %+v, want exactly %s", got, tt.wantICAO24)
+			}
+		})
+	}
+}
+
+func TestListFlightsRejectsMalformedFilterValue(t *testing.T) {
+	api, _ := testAPI(t)
+	mux := newRouter(api, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/flights?bbox=-123,36,-121,38&min_altitude_ft=not-a-number", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+func TestListFlightsRejectsNonFiniteSpeedFilter(t *testing.T) {
+	for _, value := range []string{"NaN", "Inf", "-Inf"} {
+		t.Run(value, func(t *testing.T) {
+			api, _ := testAPI(t)
+			mux := newRouter(api, nil, nil)
+
+			req := httptest.NewRequest(http.MethodGet, "/flights?bbox=-123,36,-121,38&min_speed_kt="+value, nil)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestGetFlightReturnsCurrentState(t *testing.T) {
 	api, redisClient := testAPI(t)
 	ctx := t.Context()

@@ -104,6 +104,35 @@ func TestWatchlistObserveTracksMultipleAircraftIndependently(t *testing.T) {
 	}
 }
 
+func TestWatchlistSetEntriesAddsNewlyTrackedAircraft(t *testing.T) {
+	d := NewWatchlistDetector(nil)
+	now := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
+
+	_, matched := d.Observe(flightmodel.FlightState{ICAO24: "a1b2c3", LastSeenUTC: now})
+	if matched {
+		t.Fatal("Observe before SetEntries = match, want no match")
+	}
+
+	d.SetEntries([]flightmodel.WatchlistEntry{{ID: "w1", ICAO24: "a1b2c3"}})
+
+	_, matched = d.Observe(flightmodel.FlightState{ICAO24: "a1b2c3", LastSeenUTC: now.Add(time.Second)})
+	if !matched {
+		t.Fatal("Observe after SetEntries = no match, want a match for the newly added entry")
+	}
+}
+
+func TestWatchlistSetEntriesToEmptyStopsMatching(t *testing.T) {
+	d := NewWatchlistDetector([]flightmodel.WatchlistEntry{{ID: "w1", ICAO24: "a1b2c3"}})
+	now := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
+
+	d.SetEntries(nil)
+
+	_, matched := d.Observe(flightmodel.FlightState{ICAO24: "a1b2c3", LastSeenUTC: now})
+	if matched {
+		t.Fatal("Observe after SetEntries(nil) = match, want no match")
+	}
+}
+
 func TestWatchlistEvictBeforeAllowsRematchAfterEviction(t *testing.T) {
 	d := NewWatchlistDetector([]flightmodel.WatchlistEntry{{ID: "w1", ICAO24: "a1b2c3"}})
 	now := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
