@@ -31,21 +31,23 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
-      - POSTGRES_DB=${POSTGRES_DB:-postgres}
-      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER:-postgres}"]
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER}"]
       interval: 5s
       timeout: 2s
       retries: 5
 
   nats:
     image: nats:2-alpine
-    command: ["-js", "-m", "8222"]
+    command: ["-js", "-sd", "/data", "-m", "8222"]
     restart: unless-stopped
+    volumes:
+      - nats_data:/data
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
       interval: 5s
@@ -113,7 +115,7 @@ services:
     environment:
       - PORT=8086
       - NATS_URL=nats://nats:4222
-      - DATABASE_URL=postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-postgres}?sslmode=disable
+      - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
     depends_on:
       nats:
         condition: service_healthy
@@ -127,7 +129,7 @@ services:
       - PORT=8080
       - REDIS_ADDR=redis:6379
       - NATS_URL=nats://nats:4222
-      - DATABASE_URL=postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-postgres}?sslmode=disable
+      - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
     depends_on:
       redis:
         condition: service_healthy
@@ -145,3 +147,4 @@ volumes:
   postgres_data:
   caddy_data:
   caddy_config:
+  nats_data:

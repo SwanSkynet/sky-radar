@@ -97,15 +97,16 @@ script's uptime math meaningful instead of permanently red on targets it
 was never going to be able to reach; the apigateway-healthz and
 apigateway-flights lines are the ones that matter here.)
 
-In parallel, SSH into the Droplet and use Docker Compose CLI tools to check internal service health and container status:
+In parallel, SSH into the Droplet and use Docker Compose and Docker CLI tools to check internal service health and container status:
 
 ```sh
 cd /root/sky-radar/deploy
-docker compose -f docker-compose.prod.yml ps             # Shows container states, uptime, and healthchecks
+docker compose -f docker-compose.prod.yml ps             # Quick health check of running containers
+docker compose -f docker-compose.prod.yml ps -q | xargs docker inspect --format '{{.Name}}: {{.State.RestartCount}} restarts' # Inspect restart counts
 docker compose -f docker-compose.prod.yml logs --tail=50  # Inspects logs from the services
 ```
 
-The container status shown by `docker compose ps` (under the status column, e.g. `Up 24 hours` or `Restarted (1)`) is the authoritative signal for "no manual restarts" in production: any restart event in that window needs an explanation.
+Use `docker compose ps` as a quick health check of current container states and uptime. For a definitive "no manual restarts" signal, check the container restart count via `docker inspect` (as `ps` only shows the current status and can hide transient restarts). A restart count of `0` is the authoritative signal that no unexpected restarts occurred: any restart event in that window needs an explanation.
 
 ## Checking P1-FR2 (no sustained rate-limiting)
 
@@ -120,7 +121,7 @@ docker compose logs adapter-opensky adapter-adsblol adapter-airplaneslive | grep
 
 # Production (SSH'ed into the Droplet)
 cd /root/sky-radar/deploy
-docker compose -f docker-compose.prod.yml logs | grep 'status 429'
+docker compose -f docker-compose.prod.yml logs --since 24h | grep 'status 429'
 ```
 
 A handful of isolated `429`s is expected (the backoff in
