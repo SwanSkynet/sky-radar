@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef } from "react";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { MapboxOverlay } from "@deck.gl/mapbox";
-import { ScatterplotLayer } from "@deck.gl/layers";
+import { IconLayer, ScatterplotLayer } from "@deck.gl/layers";
+import type { Layer } from "@deck.gl/core";
+import { iconDefFor, headingToIconAngle } from "./aircraftIcons";
 import {
   fetchFlightsByBBox,
   type BBox,
@@ -51,38 +53,85 @@ function bboxToTuple(bbox: BBox): [number, number, number, number] {
   return [bbox.minLon, bbox.minLat, bbox.maxLon, bbox.maxLat];
 }
 
-const SELECTED_LINE_COLOR: [number, number, number, number] = [255, 255, 255, 255];
+const SELECTED_RING_COLOR: [number, number, number, number] = [255, 255, 255, 230];
 
-function buildAircraftLayer(
+// Base on-screen icon size in pixels; the selected aircraft is drawn a bit
+// larger on top of the selection ring.
+const ICON_SIZE_PX = 26;
+const ICON_SIZE_SELECTED_PX = 34;
+
+// buildAircraftIconLayer renders aircraft as heading-rotated, per-type SVG
+// icons. Icons are masks (see aircraftIcons.IconDef), so getColor carries the
+// existing fresh-blue / stale-grey / replay-amber semantics over from the old
+// ScatterplotLayer.
+function buildAircraftIconLayer(
   flights: FlightState[],
   isReplay: boolean,
   selectedIcao24: string | null,
-): ScatterplotLayer<FlightState> {
-  return new ScatterplotLayer<FlightState>({
+): IconLayer<FlightState> {
+  return new IconLayer<FlightState>({
     id: "aircraft",
     data: flights,
     getPosition: (d) => [d.lon, d.lat],
-    getFillColor: isReplay
+    getIcon: (d) => iconDefFor(d.icon_class),
+    getAngle: (d) => headingToIconAngle(d.heading_deg),
+    getColor: isReplay
       ? REPLAY_COLOR
       : (d) => (d.stale ? STALE_COLOR : FRESH_COLOR),
-    // The selected aircraft is drawn larger with a white outline so it stays
-    // distinguishable from the rest of the live layer.
-    getRadius: (d) => (d.icao24 === selectedIcao24 ? 10000 : 6000),
-    radiusUnits: "meters",
-    radiusMinPixels: 3,
-    radiusMaxPixels: 8,
-    stroked: true,
-    lineWidthUnits: "pixels",
-    getLineWidth: (d) => (d.icao24 === selectedIcao24 ? 2 : 0),
-    getLineColor: SELECTED_LINE_COLOR,
+    getSize: (d) =>
+      d.icao24 === selectedIcao24 ? ICON_SIZE_SELECTED_PX : ICON_SIZE_PX,
+    sizeUnits: "pixels",
     // Selection only applies to the live layer; replayed aircraft aren't
     // clickable.
     pickable: !isReplay,
     updateTriggers: {
-      getRadius: selectedIcao24,
-      getLineWidth: selectedIcao24,
+      getColor: isReplay,
+      getSize: selectedIcao24,
     },
   });
+}
+
+// buildSelectionRing draws a ring under the selected live aircraft so the
+// selection stays obvious beneath the icon. Returns an empty list when
+// nothing is selected or in replay mode.
+function buildSelectionRing(
+  flights: FlightState[],
+  selectedIcao24: string | null,
+): ScatterplotLayer<FlightState>[] {
+  const selected = selectedIcao24
+    ? flights.find((f) => f.icao24 === selectedIcao24)
+    : undefined;
+  if (!selected) return [];
+  return [
+    new ScatterplotLayer<FlightState>({
+      id: "selection-ring",
+      data: [selected],
+      getPosition: (d) => [d.lon, d.lat],
+      getFillColor: [0, 0, 0, 0],
+      stroked: true,
+      filled: true,
+      lineWidthUnits: "pixels",
+      getLineWidth: 2,
+      getLineColor: SELECTED_RING_COLOR,
+      radiusUnits: "pixels",
+      getRadius: 22,
+      radiusMinPixels: 22,
+      pickable: false,
+    }),
+  ];
+}
+
+// buildAircraftLayers composes the selection ring (if any) under the icon
+// layer.
+function buildAircraftLayers(
+  flights: FlightState[],
+  isReplay: boolean,
+  selectedIcao24: string | null,
+): Layer[] {
+  return [
+    ...(isReplay ? [] : buildSelectionRing(flights, selectedIcao24)),
+    buildAircraftIconLayer(flights, isReplay, selectedIcao24),
+  ];
 }
 
 function connectionStatusLabel(status: ConnectionStatus): string | null {
@@ -259,9 +308,11 @@ export function MapView() {
 
   useEffect(() => {
     overlayRef.current?.setProps({
-      layers: [
-        buildAircraftLayer(displayedFlights, isReplayActive, selectedIcao24),
-      ],
+      layers: buildAircraftLayers(
+        displayedFlights,
+        isReplayActive,
+        selectedIcao24,
+      ),
       // Clicking an aircraft selects it; clicking empty map clears the
       // selection. Replay mode is non-interactive for selection.
       onClick: (info: PickingInfo) => {
