@@ -240,7 +240,7 @@ func TestSubscriberReceivesIndependentlyOfOtherConsumers(t *testing.T) {
 			defer cancel()
 
 			go func() {
-				_ = sub.Run(runCtx, nil, func(state flightmodel.FlightState) {
+				_ = sub.Run(runCtx, nil, func(state flightmodel.FlightState, _ time.Time) {
 					mu.Lock()
 					if got == nil {
 						got = &state

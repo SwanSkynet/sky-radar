@@ -18,7 +18,11 @@ import (
 
 	"github.com/SwanSkynet/sky-radar/internal/flightmodel"
 	"github.com/SwanSkynet/sky-radar/internal/natsutil"
+	"github.com/SwanSkynet/sky-radar/internal/otelutil"
 	"github.com/SwanSkynet/sky-radar/internal/pgstore"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
 
 const (
@@ -95,8 +99,52 @@ func healthz(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
+// otelMeter and the instruments below are created against otel's global,
+// delegating Meter: they delegate to a no-op implementation until main
+// calls otelutil.Init. detectionLatency backs the master PRD's "Event
+// detection latency (P95) ≤5s from normalized ingest to event emission"
+// SLO: it's the gap between the flights.updates message's JetStream
+// publish timestamp (ingestedAt, passed into every subscriber callback)
+// and the moment the resulting Event is published to events.detected.
+var (
+	otelMeter        = otel.Meter(serviceName)
+	detectionLatency = otelutil.MustFloat64Histogram(otelMeter, "skyradar.eventengine.detection_latency",
+		metric.WithUnit("s"), metric.WithDescription("Seconds from normalized ingest (flights.updates publish) to event emission"))
+	eventsEmitted = otelutil.MustInt64Counter(otelMeter, "skyradar.eventengine.events_emitted",
+		metric.WithDescription("Events published to events.detected, by type"))
+)
+
+// recordEventEmitted records detectionLatency and eventsEmitted for a
+// successfully published event. ingestedAt is zero for events synthesized
+// by the periodic stale sweep (runStaleSweepLoop) rather than triggered by
+// a specific flights.updates message — those have no single ingest point
+// to measure latency against, so only the emitted-count is recorded.
+func recordEventEmitted(ctx context.Context, event flightmodel.Event, ingestedAt time.Time) {
+	attrs := metric.WithAttributes(attribute.String("event_type", string(event.Type)))
+	if !ingestedAt.IsZero() {
+		detectionLatency.Record(ctx, time.Since(ingestedAt).Seconds(), attrs)
+	}
+	eventsEmitted.Add(ctx, 1, attrs)
+}
+
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", serviceName)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	providers, err := otelutil.Init(ctx, serviceName, "dev")
+	if err != nil {
+		slog.New(slog.NewJSONHandler(os.Stdout, nil)).Error("otel init failed", "err", err)
+		os.Exit(1)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := providers.Shutdown(shutdownCtx); err != nil {
+			slog.New(slog.NewJSONHandler(os.Stdout, nil)).Error("otel shutdown failed", "err", err)
+		}
+	}()
+
+	logger := otelutil.NewLogger(serviceName)
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -105,18 +153,16 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
+	mux.Handle("GET /metrics", providers.MetricsHandler)
 
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           mux,
+		Handler:           otelutil.WrapHTTPHandler(serviceName, mux),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	pg, err := pgstore.Connect(ctx, envString("DATABASE_URL", defaultDatabaseURL))
 	if err != nil {
@@ -186,13 +232,14 @@ func main() {
 	go func() {
 		if err := subscriber.Run(ctx, func(err error) {
 			logger.Error("decode flight state failed", "err", err)
-		}, func(state flightmodel.FlightState) {
+		}, func(state flightmodel.FlightState, ingestedAt time.Time) {
 			logFlightUpdate(logger, state)
 			staleDetector.Observe(state)
 			if event, ok := altitudeDetector.Observe(state); ok {
 				if err := eventPublisher.PublishEvent(ctx, event); err != nil {
 					logger.Error("publish event failed", "icao24", event.ICAO24, "type", event.Type, "err", err)
 				} else {
+					recordEventEmitted(ctx, event, ingestedAt)
 					logger.Info("event detected", "icao24", event.ICAO24, "type", event.Type)
 				}
 			}
@@ -200,6 +247,7 @@ func main() {
 				if err := eventPublisher.PublishEvent(ctx, event); err != nil {
 					logger.Error("publish event failed", "icao24", event.ICAO24, "type", event.Type, "err", err)
 				} else {
+					recordEventEmitted(ctx, event, ingestedAt)
 					logger.Info("event detected", "icao24", event.ICAO24, "type", event.Type)
 				}
 			}
@@ -207,6 +255,7 @@ func main() {
 				if err := eventPublisher.PublishEvent(ctx, event); err != nil {
 					logger.Error("publish event failed", "icao24", event.ICAO24, "type", event.Type, "err", err)
 				} else {
+					recordEventEmitted(ctx, event, ingestedAt)
 					logger.Info("event detected", "icao24", event.ICAO24, "type", event.Type)
 				}
 			}
@@ -214,6 +263,7 @@ func main() {
 				if err := eventPublisher.PublishEvent(ctx, event); err != nil {
 					logger.Error("publish event failed", "icao24", event.ICAO24, "type", event.Type, "err", err)
 				} else {
+					recordEventEmitted(ctx, event, ingestedAt)
 					logger.Info("event detected", "icao24", event.ICAO24, "type", event.Type)
 				}
 			}
@@ -381,6 +431,7 @@ func runStaleSweepLoop(ctx context.Context, logger *slog.Logger, detector *Stale
 				logger.Error("publish event failed", "icao24", event.ICAO24, "type", event.Type, "err", err)
 				continue
 			}
+			recordEventEmitted(ctx, event, time.Time{})
 			logger.Info("event detected", "icao24", event.ICAO24, "type", event.Type)
 		}
 		speedDetector.EvictBefore(now.Add(-speedBaselineEvictAfter))

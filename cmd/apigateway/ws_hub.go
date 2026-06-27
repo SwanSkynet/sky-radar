@@ -1,10 +1,31 @@
 package main
 
 import (
+	"context"
 	"sync"
 
 	"github.com/SwanSkynet/sky-radar/internal/geo"
 	"github.com/SwanSkynet/sky-radar/internal/natsutil"
+	"github.com/SwanSkynet/sky-radar/internal/otelutil"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
+)
+
+// otelMeter and the instruments below are created against otel's global,
+// delegating Meter: they delegate to a no-op implementation until main
+// calls otelutil.Init. wsActiveConnections and wsMessagesSent back the
+// master PRD's WebSocket fan-out SLO ("per-connection bandwidth bounded by
+// viewport regardless of global aircraft count") — the bound itself is
+// enforced by wsHub.broadcast's per-client viewport filter and verified by
+// the manual small-bbox-vs-large-bbox test in
+// docs/prd/phase-2-realtime-systems.md; these two counters give a live
+// view of connection/message volume as a sanity signal on the dashboard.
+var (
+	otelMeter           = otel.Meter(serviceName)
+	wsActiveConnections = otelutil.MustInt64UpDownCounter(otelMeter, "skyradar.ws.active_connections",
+		metric.WithDescription("Currently connected WebSocket clients"))
+	wsMessagesSent = otelutil.MustInt64Counter(otelMeter, "skyradar.ws.messages_sent",
+		metric.WithDescription("Flight update messages delivered to WebSocket clients"))
 )
 
 // wsSendBufferSize bounds how many undelivered flight updates a single
@@ -62,6 +83,7 @@ func (h *wsHub) register(c *wsClient) {
 	h.mu.Lock()
 	h.clients[c] = struct{}{}
 	h.mu.Unlock()
+	wsActiveConnections.Add(context.Background(), 1)
 }
 
 // unregister removes c from the broadcast set.
@@ -69,6 +91,7 @@ func (h *wsHub) unregister(c *wsClient) {
 	h.mu.Lock()
 	delete(h.clients, c)
 	h.mu.Unlock()
+	wsActiveConnections.Add(context.Background(), -1)
 }
 
 // broadcast delivers msg to every registered client whose viewport
@@ -84,6 +107,7 @@ func (h *wsHub) broadcast(msg natsutil.FlightStateMessage) {
 		}
 		select {
 		case c.send <- msg:
+			wsMessagesSent.Add(context.Background(), 1)
 		default:
 		}
 	}

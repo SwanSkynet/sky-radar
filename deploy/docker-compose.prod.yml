@@ -62,6 +62,8 @@ services:
       - REDIS_ADDR=redis:6379
       - OPENSKY_CLIENT_ID=${OPENSKY_CLIENT_ID}
       - OPENSKY_CLIENT_SECRET=${OPENSKY_CLIENT_SECRET}
+      - DEPLOY_ENV=production
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     depends_on:
       redis:
         condition: service_healthy
@@ -72,6 +74,8 @@ services:
     environment:
       - PORT=8082
       - REDIS_ADDR=redis:6379
+      - DEPLOY_ENV=production
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     depends_on:
       redis:
         condition: service_healthy
@@ -82,6 +86,8 @@ services:
     environment:
       - PORT=8083
       - REDIS_ADDR=redis:6379
+      - DEPLOY_ENV=production
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     depends_on:
       redis:
         condition: service_healthy
@@ -93,6 +99,8 @@ services:
       - PORT=8084
       - REDIS_ADDR=redis:6379
       - NATS_URL=nats://nats:4222
+      - DEPLOY_ENV=production
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     depends_on:
       redis:
         condition: service_healthy
@@ -106,6 +114,8 @@ services:
       - PORT=8085
       - NATS_URL=nats://nats:4222
       - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=${POSTGRES_SSLMODE:-disable}
+      - DEPLOY_ENV=production
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     depends_on:
       nats:
         condition: service_healthy
@@ -119,6 +129,8 @@ services:
       - PORT=8086
       - NATS_URL=nats://nats:4222
       - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=${POSTGRES_SSLMODE:-disable}
+      - DEPLOY_ENV=production
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     depends_on:
       nats:
         condition: service_healthy
@@ -133,6 +145,8 @@ services:
       - REDIS_ADDR=redis:6379
       - NATS_URL=nats://nats:4222
       - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=${POSTGRES_SSLMODE:-disable}
+      - DEPLOY_ENV=production
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     depends_on:
       redis:
         condition: service_healthy
@@ -144,6 +158,31 @@ services:
   web:
     image: ghcr.io/${GHCR_OWNER:-swanskynet}/sky-radar-web:${TAG:-latest}
     restart: unless-stopped
+
+  # Opt-in (`docker compose -f docker-compose.prod.yml --profile
+  # cloud-shipping up -d`) Grafana Cloud shipping agent — see
+  # deploy/observability/alloy/config.alloy and
+  # docs/tech-stack/observability-and-ops.md. Requires
+  # GRAFANA_CLOUD_PROMETHEUS_URL, GRAFANA_CLOUD_PROMETHEUS_USER,
+  # GRAFANA_CLOUD_TEMPO_URL, GRAFANA_CLOUD_TEMPO_USER, and
+  # GRAFANA_CLOUD_API_KEY in the deploy .env. Without this profile enabled,
+  # OTEL_EXPORTER_OTLP_ENDPOINT stays unset above and every service simply
+  # runs trace-free (metrics still flow via each service's own /metrics
+  # endpoint regardless), so enabling this profile later is a config-only
+  # change, not a redeploy of the app images.
+  alloy:
+    image: grafana/alloy:v1.5.1
+    profiles: ["cloud-shipping"]
+    restart: unless-stopped
+    environment:
+      - GRAFANA_CLOUD_PROMETHEUS_URL=${GRAFANA_CLOUD_PROMETHEUS_URL}
+      - GRAFANA_CLOUD_PROMETHEUS_USER=${GRAFANA_CLOUD_PROMETHEUS_USER}
+      - GRAFANA_CLOUD_TEMPO_URL=${GRAFANA_CLOUD_TEMPO_URL}
+      - GRAFANA_CLOUD_TEMPO_USER=${GRAFANA_CLOUD_TEMPO_USER}
+      - GRAFANA_CLOUD_API_KEY=${GRAFANA_CLOUD_API_KEY}
+    volumes:
+      - ./observability/alloy/config.alloy:/etc/alloy/config.alloy:ro
+    command: ["run", "--server.http.listen-addr=0.0.0.0:12345", "/etc/alloy/config.alloy"]
 
 volumes:
   redis_data:

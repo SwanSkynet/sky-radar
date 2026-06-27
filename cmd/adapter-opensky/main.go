@@ -13,9 +13,12 @@ import (
 	"time"
 
 	"github.com/SwanSkynet/sky-radar/internal/health"
+	"github.com/SwanSkynet/sky-radar/internal/otelutil"
 	"github.com/SwanSkynet/sky-radar/internal/redisutil"
 	"github.com/SwanSkynet/sky-radar/internal/sourceadapter"
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
 )
 
 const (
@@ -34,8 +37,40 @@ const (
 	defaultRedisAddr    = "localhost:6379"
 )
 
+// otelMeter and the instruments below are created against otel's global,
+// delegating Meter: at this point in program startup otelutil.Init hasn't
+// run yet, so they delegate to a no-op implementation (harmless in tests
+// that call runPollLoop directly) until main calls otelutil.Init, at which
+// point the global MeterProvider swap makes every instrument created here
+// start exporting for real. See docs/tech-stack/observability-and-ops.md.
+var (
+	otelMeter    = otel.Meter(serviceName)
+	pollDuration = otelutil.MustFloat64Histogram(otelMeter, "skyradar.adapter.poll.duration",
+		metric.WithUnit("s"), metric.WithDescription("Adapter Poll() call latency"))
+	pollErrors = otelutil.MustInt64Counter(otelMeter, "skyradar.adapter.poll.errors",
+		metric.WithDescription("Adapter Poll() failures"))
+	markSourceFresh = otelutil.MustLastSuccessGauge(otelMeter, "skyradar.adapter.source.freshness",
+		"Seconds since the last successful poll of this source")
+)
+
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", serviceName)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	providers, err := otelutil.Init(ctx, serviceName, "dev")
+	if err != nil {
+		slog.New(slog.NewJSONHandler(os.Stdout, nil)).Error("otel init failed", "err", err)
+		os.Exit(1)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := providers.Shutdown(shutdownCtx); err != nil {
+			slog.New(slog.NewJSONHandler(os.Stdout, nil)).Error("otel shutdown failed", "err", err)
+		}
+	}()
+
+	logger := otelutil.NewLogger(serviceName)
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -43,18 +78,16 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", providers.MetricsHandler)
 
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           mux,
+		Handler:           otelutil.WrapHTTPHandler(serviceName, mux),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	// OPENSKY_CLIENT_ID/OPENSKY_CLIENT_SECRET are optional: /states/all
 	// works anonymously, just at a lower rate limit. Leaving either
@@ -116,10 +149,14 @@ func runPollLoop(ctx context.Context, logger *slog.Logger, adapter sourceadapter
 	defer ticker.Stop()
 
 	for {
+		pollStart := time.Now()
 		states, err := adapter.Poll(ctx)
+		pollDuration.Record(ctx, time.Since(pollStart).Seconds())
 		if err != nil {
+			pollErrors.Add(ctx, 1)
 			logger.Error("poll failed", "err", err)
 		} else {
+			markSourceFresh()
 			for _, state := range states {
 				if err := redisClient.WriteRawState(ctx, state, ttl); err != nil {
 					logger.Error("redis write failed", "icao24", state.ICAO24, "err", err)

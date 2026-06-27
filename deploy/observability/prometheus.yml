@@ -1,0 +1,22 @@
+# Local/self-host scrape config for the "observability" docker-compose
+# profile. Every Sky Radar service exposes a Prometheus-compatible
+# /metrics endpoint regardless of where metrics ultimately get shipped
+# (see docs/tech-stack/observability-and-ops.md), so this is the same
+# eight targets a production Grafana Alloy agent scrapes before
+# remote_write-ing to Grafana Cloud (see deploy/observability/alloy/config.alloy).
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: skyradar
+    static_configs:
+      - targets:
+          - apigateway:8080
+          - adapter-opensky:8081
+          - adapter-adsblol:8082
+          - adapter-airplaneslive:8083
+          - normalizer:8084
+          - eventengine:8085
+          - pgstorewriter:8086
+        labels:
+          deployment_environment: local

@@ -20,8 +20,12 @@ import (
 
 	"github.com/SwanSkynet/sky-radar/internal/flightmodel"
 	"github.com/SwanSkynet/sky-radar/internal/natsutil"
+	"github.com/SwanSkynet/sky-radar/internal/otelutil"
 	"github.com/SwanSkynet/sky-radar/internal/pgstore"
 	"github.com/SwanSkynet/sky-radar/internal/pgstorewriter"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
 
 const (
@@ -54,16 +58,43 @@ const (
 	pingTimeout = 2 * time.Second
 )
 
+// otelMeter and the instruments below are created against otel's global,
+// delegating Meter: they delegate to a no-op implementation until main
+// calls otelutil.Init. writeLag is this service's proxy for the master
+// PRD's DR-RPO SLO: the gap between a flights.updates/events.detected
+// message's publish/occurrence time and the moment it's durably written to
+// Postgres is exactly how much data a crash right now could lose.
+var (
+	otelMeter    = otel.Meter(serviceName)
+	writeLatency = otelutil.MustFloat64Histogram(otelMeter, "skyradar.pgstorewriter.write_latency",
+		metric.WithUnit("s"), metric.WithDescription("Postgres write call latency, by record kind"))
+	writeLag = otelutil.MustFloat64Histogram(otelMeter, "skyradar.pgstorewriter.write_lag",
+		metric.WithUnit("s"), metric.WithDescription("Seconds between a record's publish/occurrence time and its durable Postgres write — a proxy for the DR RPO SLO"))
+)
+
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", serviceName)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	providers, err := otelutil.Init(ctx, serviceName, "dev")
+	if err != nil {
+		slog.New(slog.NewJSONHandler(os.Stdout, nil)).Error("otel init failed", "err", err)
+		os.Exit(1)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := providers.Shutdown(shutdownCtx); err != nil {
+			slog.New(slog.NewJSONHandler(os.Stdout, nil)).Error("otel shutdown failed", "err", err)
+		}
+	}()
+
+	logger := otelutil.NewLogger(serviceName)
 
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = defaultPort
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	store, err := pgstore.Connect(ctx, envString("DATABASE_URL", defaultDatabaseURL))
 	if err != nil {
@@ -93,10 +124,11 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+	mux.Handle("GET /metrics", providers.MetricsHandler)
 
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           mux,
+		Handler:           otelutil.WrapHTTPHandler(serviceName, mux),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
@@ -142,13 +174,16 @@ func main() {
 	go func() {
 		if err := flightSub.Run(ctx, func(err error) {
 			logger.Error("decode flight state failed", "err", err)
-		}, func(state flightmodel.FlightState) {
+		}, func(state flightmodel.FlightState, ingestedAt time.Time) {
+			writeStart := time.Now()
 			wrote, err := historyWriter.Observe(ctx, state)
 			if err != nil {
 				logger.Error("write flight history failed", "icao24", state.ICAO24, "err", err)
 				return
 			}
 			if wrote {
+				writeLatency.Record(ctx, time.Since(writeStart).Seconds(), metric.WithAttributes(attribute.String("kind", "flight_history")))
+				writeLag.Record(ctx, time.Since(ingestedAt).Seconds(), metric.WithAttributes(attribute.String("kind", "flight_history")))
 				logger.Info("flight history written", "icao24", state.ICAO24)
 			}
 		}); err != nil {
@@ -166,10 +201,13 @@ func main() {
 		if err := eventSub.Run(ctx, func(err error) {
 			logger.Error("decode event failed", "err", err)
 		}, func(event flightmodel.Event) error {
+			writeStart := time.Now()
 			if err := eventWriter.Observe(ctx, event); err != nil {
 				logger.Error("write event failed", "icao24", event.ICAO24, "type", event.Type, "err", err)
 				return err
 			}
+			writeLatency.Record(ctx, time.Since(writeStart).Seconds(), metric.WithAttributes(attribute.String("kind", "event")))
+			writeLag.Record(ctx, time.Since(event.OccurredAtUTC).Seconds(), metric.WithAttributes(attribute.String("kind", "event")))
 			logger.Info("event written", "icao24", event.ICAO24, "type", event.Type)
 			return nil
 		}); err != nil {

@@ -18,8 +18,11 @@ import (
 	"github.com/SwanSkynet/sky-radar/internal/flightmodel"
 	"github.com/SwanSkynet/sky-radar/internal/health"
 	"github.com/SwanSkynet/sky-radar/internal/natsutil"
+	"github.com/SwanSkynet/sky-radar/internal/otelutil"
 	"github.com/SwanSkynet/sky-radar/internal/redisutil"
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
 )
 
 const (
@@ -41,8 +44,41 @@ const (
 	defaultFlightStateTTL = 90 * time.Second
 )
 
+// otelMeter and the instruments below are created against otel's global,
+// delegating Meter: they delegate to a no-op implementation until main
+// calls otelutil.Init, which is harmless for tests that call runMergeLoop
+// directly. freshness backs the master PRD's "Data freshness (P95) ≤15s
+// behind source" SLO directly: it's the gap between a FlightState's source
+// observation time (LastSeenUTC) and the moment the normalizer persists
+// and publishes it, measured per state rather than once per merge cycle.
+var (
+	otelMeter = otel.Meter(serviceName)
+	freshness = otelutil.MustFloat64Histogram(otelMeter, "skyradar.normalizer.freshness",
+		metric.WithUnit("s"), metric.WithDescription("Seconds between a flight state's source observation time and normalizer publish"))
+	mergeCycleDuration = otelutil.MustFloat64Histogram(otelMeter, "skyradar.normalizer.merge_cycle.duration",
+		metric.WithUnit("s"), metric.WithDescription("Wall-clock time of one merge cycle (Redis scan through publish)"))
+	mergeCycleFlights = otelutil.MustInt64Counter(otelMeter, "skyradar.normalizer.merge_cycle.flights",
+		metric.WithDescription("Flights produced per merge cycle (recorded as a running total; rate() gives flights/sec)"))
+)
+
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", serviceName)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	providers, err := otelutil.Init(ctx, serviceName, "dev")
+	if err != nil {
+		slog.New(slog.NewJSONHandler(os.Stdout, nil)).Error("otel init failed", "err", err)
+		os.Exit(1)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := providers.Shutdown(shutdownCtx); err != nil {
+			slog.New(slog.NewJSONHandler(os.Stdout, nil)).Error("otel shutdown failed", "err", err)
+		}
+	}()
+
+	logger := otelutil.NewLogger(serviceName)
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -50,18 +86,16 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", providers.MetricsHandler)
 
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           mux,
+		Handler:           otelutil.WrapHTTPHandler(serviceName, mux),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	redisClient := redisutil.New(&redis.Options{Addr: envString("REDIS_ADDR", defaultRedisAddr)})
 	defer func() {
@@ -132,6 +166,7 @@ func runMergeLoop(ctx context.Context, logger *slog.Logger, redisClient *redisut
 	defer ticker.Stop()
 
 	for {
+		cycleStart := time.Now()
 		raws, err := redisClient.ScanRawStates(ctx)
 		if err != nil {
 			logger.Error("scan raw states failed", "err", err)
@@ -140,6 +175,8 @@ func runMergeLoop(ctx context.Context, logger *slog.Logger, redisClient *redisut
 			for _, state := range states {
 				persistAndPublish(ctx, logger, redisClient, publisher, state, ttl)
 			}
+			mergeCycleDuration.Record(ctx, time.Since(cycleStart).Seconds())
+			mergeCycleFlights.Add(ctx, int64(len(states)))
 			logger.Info("merge cycle complete", "raw_count", len(raws), "flight_count", len(states))
 		}
 
@@ -166,6 +203,7 @@ func persistAndPublish(ctx context.Context, logger *slog.Logger, redisClient *re
 		logger.Error("write flight state failed", "icao24", state.ICAO24, "err", err)
 		return
 	}
+	freshness.Record(ctx, time.Since(state.LastSeenUTC).Seconds())
 	if err := publisher.PublishFlightState(ctx, state); err != nil {
 		logger.Error("publish flight state failed", "icao24", state.ICAO24, "err", err)
 	}

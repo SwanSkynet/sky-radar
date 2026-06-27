@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: skyradar
+    orgId: 1
+    folder: "Sky Radar"
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/provisioning/dashboards/files
