@@ -1,0 +1,203 @@
+{
+  "title": "Sky Radar SLOs",
+  "uid": "skyradar-slos",
+  "tags": ["skyradar", "slo"],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Availability (API requests, non-5xx) — target 99.5% monthly",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 99 },
+              { "color": "green", "value": 99.5 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "100 * (1 - (sum(rate(http_server_request_duration_seconds_count{http_response_status_code=~\"5..\"}[$__rate_interval])) or vector(0)) / sum(rate(http_server_request_duration_seconds_count[$__rate_interval])))",
+          "legendFormat": "availability"
+        }
+      ],
+      "description": "Master PRD SLO: Availability (API + frontend), 99.5% monthly. Proxy here is the non-5xx share of apigateway HTTP requests (otelhttp's http_server_request_duration_seconds_count); frontend static-asset availability is not separately instrumented yet."
+    },
+    {
+      "id": 2,
+      "title": "Data freshness P95 — target ≤ 15s",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(skyradar_normalizer_freshness_seconds_bucket[$__rate_interval])) by (le))",
+          "legendFormat": "end-to-end P95"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "skyradar_adapter_source_freshness_seconds",
+          "legendFormat": "{{instance}} (per-source)"
+        }
+      ],
+      "thresholds": [{ "value": 15, "colorMode": "critical", "op": "gt" }],
+      "description": "Master PRD SLO: Data freshness (P95) ≤ 15s behind source, measured per source and end-to-end. skyradar_normalizer_freshness_seconds is the source-observation-to-publish gap; skyradar_adapter_source_freshness_seconds is seconds since each adapter's last successful poll."
+    },
+    {
+      "id": 3,
+      "title": "Event detection latency P95 — target ≤ 5s",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(skyradar_eventengine_detection_latency_seconds_bucket[$__rate_interval])) by (le))",
+          "legendFormat": "P95"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(skyradar_eventengine_events_emitted_total[$__rate_interval])) by (event_type)",
+          "legendFormat": "{{event_type}} events/sec"
+        }
+      ],
+      "description": "Master PRD SLO: Event detection latency (P95) ≤ 5s from normalized ingest to event emission. Stale-signal events (synthesized by the periodic sweep, not triggered by a single flights.updates message) contribute to the emitted-events series but not the latency histogram."
+    },
+    {
+      "id": 4,
+      "title": "Map interaction latency — target ≤ 150ms",
+      "type": "text",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "options": {
+        "mode": "markdown",
+        "content": "**Master PRD SLO:** Map interaction latency (pan/zoom/filter) ≤ 150ms on a mid-tier device.\n\nThis is a frontend perf budget profiled in CI via Lighthouse (see `docs/tech-stack/observability-and-ops.md`'s CI quality gates), not a backend metric — there is no live RUM panel here yet. Tracked as a CI gate, not on this dashboard, until frontend telemetry is added."
+      }
+    },
+    {
+      "id": 5,
+      "title": "API latency P95, live/cache-eligible reads (/flights*) — target ≤ 200ms",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(http_server_request_duration_seconds_bucket{http_route=~\"/flights.*\"}[$__rate_interval])) by (le))",
+          "legendFormat": "P95"
+        }
+      ],
+      "description": "Master PRD SLO: API latency (P95, cached reads) ≤ 200ms. GET /flights and /flights/{icao24} are the viewport/detail reads this target applies to; response caching itself is not implemented yet (see docs/tech-stack/backend.md), so this currently measures uncached Redis-hot-state reads."
+    },
+    {
+      "id": 6,
+      "title": "API latency P95, history queries (/replay) — target ≤ 800ms",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 16, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(http_server_request_duration_seconds_bucket{http_route=\"/replay\"}[$__rate_interval])) by (le))",
+          "legendFormat": "P95"
+        }
+      ],
+      "description": "Master PRD SLO: API latency (P95, uncached/history queries) ≤ 800ms. GET /replay is this surface's only history/uncached query route today."
+    },
+    {
+      "id": 7,
+      "title": "WebSocket fan-out volume",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 24, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "skyradar_ws_active_connections",
+          "legendFormat": "active connections"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(skyradar_ws_messages_sent_total[$__rate_interval]))",
+          "legendFormat": "messages/sec delivered"
+        }
+      ],
+      "description": "Master PRD SLO: WebSocket fan-out — per-connection bandwidth bounded by viewport regardless of global aircraft count. The bound itself is enforced by wsHub.broadcast's per-client viewport filter and verified by the manual small-bbox-vs-large-bbox test in docs/prd/phase-2-realtime-systems.md; this panel is a live volume sanity signal, not a per-connection bandwidth measurement."
+    },
+    {
+      "id": 8,
+      "title": "Cache hit rate — target ≥ 60%",
+      "type": "text",
+      "gridPos": { "x": 12, "y": 24, "w": 12, "h": 8 },
+      "options": {
+        "mode": "markdown",
+        "content": "**Master PRD SLO:** Cache hit rate (viewport/query reads) ≥ 60%.\n\n**Status: not yet measurable.** Redis-backed response caching for viewport/detail queries (`docs/tech-stack/backend.md`) has not been implemented yet — GET /flights and /flights/{icao24} currently read Redis hot state directly on every request. Once caching ships, instrument it as `skyradar_api_cache_requests_total{result=\"hit|miss\"}` and replace this panel with `sum(rate(...{result=\"hit\"}[5m])) / sum(rate(...[5m]))`."
+      }
+    },
+    {
+      "id": 9,
+      "title": "Disaster recovery — RPO (durable-write lag) — target ≤ 5min",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 32, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(skyradar_pgstorewriter_write_lag_seconds_bucket[$__rate_interval])) by (le, kind))",
+          "legendFormat": "{{kind}} P95"
+        }
+      ],
+      "description": "Master PRD SLO: Disaster recovery RPO ≤ 5 minutes for durable history/event store. skyradar_pgstorewriter_write_lag_seconds (gap between a flights.updates/events.detected message's publish/occurrence time and its durable Postgres write) is a continuous proxy for how much data a crash right now could lose — not a substitute for an actual DR drill (Phase 3)."
+    },
+    {
+      "id": 10,
+      "title": "Disaster recovery — RTO — target ≤ 1hr",
+      "type": "text",
+      "gridPos": { "x": 12, "y": 32, "w": 12, "h": 8 },
+      "options": {
+        "mode": "markdown",
+        "content": "**Master PRD SLO:** Disaster recovery RTO ≤ 1 hour for full service restore.\n\n**Status: not yet measured.** RTO can only be measured by actually executing a restore; this is explicitly a Phase 3 deliverable (`docs/prd/phase-3-reliability-and-scale.md`'s DR drill), out of scope for this observability milestone. Tracked here as a placeholder so the SLO stays visible until a real number exists."
+      }
+    },
+    {
+      "id": 11,
+      "title": "Security — no critical/high CVEs for > 7 days",
+      "type": "text",
+      "gridPos": { "x": 0, "y": 40, "w": 12, "h": 8 },
+      "options": {
+        "mode": "markdown",
+        "content": "**Master PRD SLO:** No known critical/high CVEs in production dependencies for > 7 days, automated scanning on every build.\n\n**Status: not yet measured.** This is a CI-time signal (govulncheck/Trivy), not a runtime metric exported by any service; the CI quality gate itself is listed as planned in `docs/tech-stack/observability-and-ops.md` and is not yet wired into `.github/workflows/ci.yml`. Once it is, export the scan result as a metric (e.g. via a CI-pushed Pushgateway sample) to replace this placeholder."
+      }
+    },
+    {
+      "id": 12,
+      "title": "Cost — stay within declared budget",
+      "type": "text",
+      "gridPos": { "x": 12, "y": 40, "w": 12, "h": 8 },
+      "options": {
+        "mode": "markdown",
+        "content": "**Master PRD SLO:** Stay within declared free-tier/sponsor-funded budget; alert before the cap is hit.\n\n**Status: not yet measured.** The declared cap is a flat **$6/month DigitalOcean droplet** (`docs/tech-stack/hosting-and-deployment.md`). No cloud billing/usage API integration exists yet to turn that into a live burn-rate metric or alert (`docs/tech-stack/observability-and-ops.md`'s \"Cost alerting\" section describes this as dependent on whatever billing API is available) — tracked here as a placeholder."
+      }
+    }
+  ]
+}

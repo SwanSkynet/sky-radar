@@ -4,14 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/SwanSkynet/sky-radar/internal/flightmodel"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
 // FlightStateHandler is invoked once per decoded FlightState delivered to a
-// FlightStateSubscriber.
-type FlightStateHandler func(flightmodel.FlightState)
+// FlightStateSubscriber. ingestedAt is the JetStream message's publish
+// timestamp — i.e. when the normalizer published it to flights.updates —
+// distinct from the FlightState's own LastSeenUTC (the source's
+// observation time); subscribers use it to measure their own
+// processing/consumer lag against the normalized-ingest point, per the
+// master PRD's event-detection-latency and DR-RPO SLOs.
+type FlightStateHandler func(state flightmodel.FlightState, ingestedAt time.Time)
 
 // FlightStateSubscriber is a durable JetStream consumer of
 // SubjectFlightsUpdates. Each consumer name tracks its own delivery
@@ -64,7 +70,15 @@ func (s *FlightStateSubscriber) Run(ctx context.Context, onErr func(error), hand
 			}
 			return
 		}
-		handler(state)
+		ingestedAt := time.Now()
+		if meta, err := msg.Metadata(); err == nil {
+			if !meta.Timestamp.After(ingestedAt) {
+				ingestedAt = meta.Timestamp
+			}
+		} else if onErr != nil {
+			onErr(fmt.Errorf("natsutil: message metadata: %w", err))
+		}
+		handler(state, ingestedAt)
 		if ackErr := msg.Ack(); ackErr != nil && onErr != nil {
 			onErr(fmt.Errorf("natsutil: ack message: %w", ackErr))
 		}

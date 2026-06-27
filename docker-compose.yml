@@ -176,5 +176,36 @@ services:
       - ./web:/app
       - web_node_modules:/app/node_modules
 
+  # The "observability" profile is the self-host/lite mode described in
+  # docs/tech-stack/observability-and-ops.md: every service already
+  # exposes a Prometheus-compatible /metrics endpoint regardless of where
+  # metrics ultimately get shipped, so this is just a local
+  # Prometheus+Grafana pair scraping those same endpoints. It's opt-in
+  # (`docker compose --profile observability up`) so a plain `docker
+  # compose up` doesn't pay for two extra containers nobody asked for.
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    profiles: ["observability"]
+    restart: unless-stopped
+    volumes:
+      - ./deploy/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    profiles: ["observability"]
+    restart: unless-stopped
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    volumes:
+      - ./deploy/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/observability/grafana/dashboards:/etc/grafana/provisioning/dashboards/files:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
 volumes:
   web_node_modules:

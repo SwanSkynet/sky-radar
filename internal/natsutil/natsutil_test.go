@@ -63,10 +63,12 @@ func TestPublishFlightStateDeliversToIndependentSubscribers(t *testing.T) {
 		LastSeenUTC: time.Now().UTC(),
 	}
 
+	beforePublish := time.Now()
 	publisher := NewFlightStatePublisher(js)
 	if err := publisher.PublishFlightState(ctx, want); err != nil {
 		t.Fatalf("PublishFlightState: %v", err)
 	}
+	afterPublish := time.Now()
 
 	// Two differently-named subscribers ("eventengine" and "pgstorewriter")
 	// each get their own delivery position on the stream, demonstrating that
@@ -81,16 +83,18 @@ func TestPublishFlightStateDeliversToIndependentSubscribers(t *testing.T) {
 
 			var mu sync.Mutex
 			var got *flightmodel.FlightState
+			var gotIngestedAt time.Time
 			done := make(chan struct{})
 
 			runCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
 
 			go func() {
-				_ = sub.Run(runCtx, nil, func(state flightmodel.FlightState) {
+				_ = sub.Run(runCtx, nil, func(state flightmodel.FlightState, ingestedAt time.Time) {
 					mu.Lock()
 					if got == nil {
 						got = &state
+						gotIngestedAt = ingestedAt
 						close(done)
 					}
 					mu.Unlock()
@@ -110,6 +114,9 @@ func TestPublishFlightStateDeliversToIndependentSubscribers(t *testing.T) {
 			}
 			if got.Callsign == nil || *got.Callsign != callsign {
 				t.Errorf("Callsign = %v, want %q", got.Callsign, callsign)
+			}
+			if gotIngestedAt.Before(beforePublish) || gotIngestedAt.After(afterPublish) {
+				t.Errorf("ingestedAt = %v, want between %v and %v", gotIngestedAt, beforePublish, afterPublish)
 			}
 		})
 	}
@@ -154,7 +161,7 @@ func TestFlightStateSubscriberSkipsMalformedMessages(t *testing.T) {
 			mu.Lock()
 			decodeErrs++
 			mu.Unlock()
-		}, func(state flightmodel.FlightState) {
+		}, func(state flightmodel.FlightState, _ time.Time) {
 			mu.Lock()
 			if got == nil {
 				got = &state

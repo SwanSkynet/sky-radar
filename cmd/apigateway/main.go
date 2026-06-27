@@ -15,6 +15,7 @@ import (
 
 	"github.com/SwanSkynet/sky-radar/internal/health"
 	"github.com/SwanSkynet/sky-radar/internal/natsutil"
+	"github.com/SwanSkynet/sky-radar/internal/otelutil"
 	"github.com/SwanSkynet/sky-radar/internal/pgstore"
 	"github.com/SwanSkynet/sky-radar/internal/redisutil"
 	"github.com/redis/go-redis/v9"
@@ -63,27 +64,37 @@ const apiV1Prefix = "/api/v1"
 // auth.go); it may be nil in tests that don't exercise that path, in which
 // case requests reach the handlers unthrottled.
 func newRouterWithExtras(api *flightsAPI, wsGW *wsGateway, replay *replayAPI, zones *zonesAPI, watchlist *watchlistAPI, events *eventsAPI, auth *apiAuth) http.Handler {
+	// Routes are registered with the full /api/v1 prefix (rather than
+	// trimmed via http.StripPrefix and mounted on an unprefixed mux) so
+	// each request keeps a single *http.Request all the way down: every
+	// net/http.ServeMux.ServeHTTP call mutates r.Pattern on the request it
+	// receives directly, but http.StripPrefix hands the inner handler a
+	// shallow copy, which silently discarded the inner mux's specific
+	// match (e.g. "GET /api/v1/flights") and left otelhttp's http_route
+	// metric attribute stuck at the outer "/api/v1/" subtree pattern for
+	// every route — breaking the per-route API latency SLO dashboard
+	// panels (docs/tech-stack/observability-and-ops.md).
 	v1 := http.NewServeMux()
-	v1.HandleFunc("GET /flights", api.listFlights)
-	v1.HandleFunc("GET /flights/{icao24}", api.getFlight)
+	v1.HandleFunc("GET "+apiV1Prefix+"/flights", api.listFlights)
+	v1.HandleFunc("GET "+apiV1Prefix+"/flights/{icao24}", api.getFlight)
 	if wsGW != nil {
-		v1.HandleFunc("GET /ws", wsGW.handleWS)
+		v1.HandleFunc("GET "+apiV1Prefix+"/ws", wsGW.handleWS)
 	}
 	if replay != nil {
-		v1.HandleFunc("GET /replay", replay.getReplay)
+		v1.HandleFunc("GET "+apiV1Prefix+"/replay", replay.getReplay)
 	}
 	if zones != nil {
-		v1.HandleFunc("POST /zones", zones.createZone)
-		v1.HandleFunc("GET /zones", zones.listZones)
-		v1.HandleFunc("DELETE /zones/{id}", zones.deleteZone)
+		v1.HandleFunc("POST "+apiV1Prefix+"/zones", zones.createZone)
+		v1.HandleFunc("GET "+apiV1Prefix+"/zones", zones.listZones)
+		v1.HandleFunc("DELETE "+apiV1Prefix+"/zones/{id}", zones.deleteZone)
 	}
 	if watchlist != nil {
-		v1.HandleFunc("POST /watchlist", watchlist.createWatchlistEntry)
-		v1.HandleFunc("GET /watchlist", watchlist.listWatchlistEntries)
-		v1.HandleFunc("DELETE /watchlist/{id}", watchlist.deleteWatchlistEntry)
+		v1.HandleFunc("POST "+apiV1Prefix+"/watchlist", watchlist.createWatchlistEntry)
+		v1.HandleFunc("GET "+apiV1Prefix+"/watchlist", watchlist.listWatchlistEntries)
+		v1.HandleFunc("DELETE "+apiV1Prefix+"/watchlist/{id}", watchlist.deleteWatchlistEntry)
 	}
 	if events != nil {
-		v1.HandleFunc("GET /events", events.listEvents)
+		v1.HandleFunc("GET "+apiV1Prefix+"/events", events.listEvents)
 	}
 
 	var v1Handler http.Handler = v1
@@ -100,7 +111,7 @@ func newRouterWithExtras(api *flightsAPI, wsGW *wsGateway, replay *replayAPI, zo
 	mux.HandleFunc("GET /healthz", health.Live)
 	mux.HandleFunc("GET /readyz", health.Ready(api.redis))
 	mux.Handle("GET /api/v1/openapi.yaml", openAPIHandler)
-	mux.Handle(apiV1Prefix+"/", http.StripPrefix(apiV1Prefix, v1Handler))
+	mux.Handle(apiV1Prefix+"/", v1Handler)
 	return withCORS(mux)
 }
 
@@ -135,10 +146,23 @@ func main() {
 	issueKeyTier := flag.String("tier", string(tierElevated), "tier for -issue-key: anonymous or elevated")
 	flag.Parse()
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", serviceName)
-
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	providers, err := otelutil.Init(ctx, serviceName, "dev")
+	if err != nil {
+		slog.New(slog.NewJSONHandler(os.Stdout, nil)).Error("otel init failed", "err", err)
+		os.Exit(1)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := providers.Shutdown(shutdownCtx); err != nil {
+			slog.New(slog.NewJSONHandler(os.Stdout, nil)).Error("otel shutdown failed", "err", err)
+		}
+	}()
+
+	logger := otelutil.NewLogger(serviceName)
 
 	// Postgres connects first, ahead of Redis/NATS, so -issue-key (an
 	// offline admin operation against the durable api_keys table) can
@@ -228,9 +252,13 @@ func main() {
 		}
 	}()
 
+	topMux := http.NewServeMux()
+	topMux.Handle("GET /metrics", providers.MetricsHandler)
+	topMux.Handle("/", newRouterWithExtras(api, wsGW, replay, zonesH, watchlistH, eventsH, auth))
+
 	srv := &http.Server{
 		Addr:    ":" + port,
-		Handler: newRouterWithExtras(api, wsGW, replay, zonesH, watchlistH, eventsH, auth),
+		Handler: otelutil.WrapHTTPHandler(serviceName, topMux),
 		// ReadTimeout/WriteTimeout are deliberately unset: net/http sets
 		// them as fixed deadlines on the underlying connection before the
 		// handler runs, and Hijack (which GET /ws relies on for the

@@ -164,7 +164,7 @@ func TestRunMergeLoopPublishesFlightStateToFlightsUpdates(t *testing.T) {
 	defer runCancel()
 
 	go func() {
-		errCh <- sub.Run(runCtx, nil, func(state flightmodel.FlightState) {
+		errCh <- sub.Run(runCtx, nil, func(state flightmodel.FlightState, _ time.Time) {
 			if got == nil {
 				got = &state
 				close(done)
@@ -205,7 +205,7 @@ func TestPersistAndPublishSkipsPublishWhenWriteFails(t *testing.T) {
 	received := make(chan struct{})
 
 	go func() {
-		_ = sub.Run(runCtx, nil, func(flightmodel.FlightState) {
+		_ = sub.Run(runCtx, nil, func(flightmodel.FlightState, time.Time) {
 			close(received)
 		})
 	}()

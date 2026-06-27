@@ -1,0 +1,70 @@
+// Production metrics/traces shipping to Grafana Cloud, per
+// docs/tech-stack/observability-and-ops.md's "Recommended default:
+// Grafana Cloud free tier" — this is the one extra long-running process
+// ADR-0002 budgets for (a lightweight shipping agent), not a self-hosted
+// Prometheus+Grafana+Loki+Tempo stack. Enabled via the docker-compose
+// "cloud-shipping" profile (see deploy/docker-compose.prod.yml); requires
+// GRAFANA_CLOUD_PROMETHEUS_URL, GRAFANA_CLOUD_PROMETHEUS_USER,
+// GRAFANA_CLOUD_TEMPO_URL, GRAFANA_CLOUD_TEMPO_USER, and
+// GRAFANA_CLOUD_API_KEY to be set (see your Grafana Cloud stack's
+// "Connections > Add new connection" pages for these values).
+
+// Scrape every service's /metrics endpoint — the same endpoint a
+// self-hosted Prometheus scrapes directly in lite/local mode (see
+// deploy/observability/prometheus.yml) — and remote_write it to Grafana
+// Cloud's hosted Prometheus.
+prometheus.scrape "skyradar" {
+	targets = [
+		{ "__address__" = "apigateway:8080" },
+		{ "__address__" = "adapter-opensky:8081" },
+		{ "__address__" = "adapter-adsblol:8082" },
+		{ "__address__" = "adapter-airplaneslive:8083" },
+		{ "__address__" = "normalizer:8084" },
+		{ "__address__" = "eventengine:8085" },
+		{ "__address__" = "pgstorewriter:8086" },
+	]
+	scrape_interval = "15s"
+	forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
+}
+
+prometheus.remote_write "grafana_cloud" {
+	endpoint {
+		url = sys.env("GRAFANA_CLOUD_PROMETHEUS_URL")
+
+		basic_auth {
+			username = sys.env("GRAFANA_CLOUD_PROMETHEUS_USER")
+			password = sys.env("GRAFANA_CLOUD_API_KEY")
+		}
+	}
+}
+
+// Receive OTLP traces from every app service (each one points
+// OTEL_EXPORTER_OTLP_ENDPOINT at this container — see
+// deploy/docker-compose.prod.yml) and forward them to Grafana Cloud Tempo.
+otelcol.receiver.otlp "app_traces" {
+	http {
+		endpoint = "0.0.0.0:4318"
+	}
+
+	output {
+		traces = [otelcol.processor.batch.default.input]
+	}
+}
+
+otelcol.processor.batch "default" {
+	output {
+		traces = [otelcol.exporter.otlphttp.grafana_cloud_tempo.input]
+	}
+}
+
+otelcol.auth.basic "grafana_cloud_tempo" {
+	username = sys.env("GRAFANA_CLOUD_TEMPO_USER")
+	password = sys.env("GRAFANA_CLOUD_API_KEY")
+}
+
+otelcol.exporter.otlphttp "grafana_cloud_tempo" {
+	client {
+		endpoint = sys.env("GRAFANA_CLOUD_TEMPO_URL")
+		auth     = otelcol.auth.basic.grafana_cloud_tempo.handler
+	}
+}
