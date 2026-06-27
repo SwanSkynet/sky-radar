@@ -6,6 +6,7 @@ import { IconLayer, ScatterplotLayer } from "@deck.gl/layers";
 import type { Layer } from "@deck.gl/core";
 import { iconDefFor, headingToIconAngle } from "./aircraftIcons";
 import { easeToUserLocation, WORLD_VIEW } from "./geolocation";
+import { applyInterpolation, type Anchor } from "./interpolation";
 import {
   fetchFlightsByBBox,
   type BBox,
@@ -159,6 +160,9 @@ export function MapView() {
   const overlayRef = useRef<MapboxOverlay | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const replayAbortRef = useRef<AbortController | null>(null);
+  // Per-aircraft dead-reckoning anchors for client-side interpolation; keyed
+  // by icao24 and updated in place by the render loop (see interpolation.ts).
+  const anchorsRef = useRef<Map<string, Anchor>>(new Map());
 
   const flights = useFlightStore((s) => s.flights);
   const lastUpdated = useFlightStore((s) => s.lastUpdated);
@@ -170,9 +174,6 @@ export function MapView() {
   const recomputeStaleness = useFlightStore((s) => s.recomputeStaleness);
   const setConnectionStatus = useFlightStore((s) => s.setConnectionStatus);
   const setError = useFlightStore((s) => s.setError);
-  const selectedIcao24 = useFlightStore((s) => s.selectedIcao24);
-  const select = useFlightStore((s) => s.select);
-  const clearSelection = useFlightStore((s) => s.clearSelection);
 
   const flightList = Object.values(flights);
 
@@ -312,26 +313,64 @@ export function MapView() {
     setConnectionStatus,
   ]);
 
+  // Render loop. Rather than rebuilding layers only when store data changes,
+  // a requestAnimationFrame loop advances live aircraft by dead reckoning
+  // every frame so motion is continuous between server updates, snapping back
+  // to authoritative positions as new updates arrive (Feature 3). Replay
+  // frames are rendered as-is (no extrapolation). All reactive inputs are read
+  // via getState() so the loop itself never needs to be re-created.
   useEffect(() => {
-    overlayRef.current?.setProps({
-      layers: buildAircraftLayers(
-        displayedFlights,
-        isReplayActive,
-        selectedIcao24,
-      ),
-      // Clicking an aircraft selects it; clicking empty map clears the
-      // selection. Replay mode is non-interactive for selection.
-      onClick: (info: PickingInfo) => {
-        if (isReplayActive) return;
-        const picked = info.object as FlightState | undefined;
-        if (picked?.icao24) {
-          select(picked.icao24);
+    let raf = 0;
+
+    const onClick = (info: PickingInfo) => {
+      if (useReplayStore.getState().isActive) return;
+      const picked = info.object as FlightState | undefined;
+      const store = useFlightStore.getState();
+      if (picked?.icao24) {
+        store.select(picked.icao24);
+      } else {
+        store.clearSelection();
+      }
+    };
+
+    const frame = () => {
+      const overlay = overlayRef.current;
+      if (overlay) {
+        const replay = useReplayStore.getState();
+        if (replay.isActive) {
+          anchorsRef.current.clear();
+          const replayFlights = computeFlightsAtTime(
+            replay.samples,
+            replay.sampleTimesMs,
+            replay.scrubMs,
+          );
+          overlay.setProps({
+            layers: buildAircraftLayers(replayFlights, true, null),
+            onClick,
+          });
         } else {
-          clearSelection();
+          const flightStore = useFlightStore.getState();
+          const interpolated = applyInterpolation(
+            Object.values(flightStore.flights),
+            anchorsRef.current,
+            Date.now(),
+          );
+          overlay.setProps({
+            layers: buildAircraftLayers(
+              interpolated,
+              false,
+              flightStore.selectedIcao24,
+            ),
+            onClick,
+          });
         }
-      },
-    });
-  }, [displayedFlights, isReplayActive, selectedIcao24, select, clearSelection]);
+      }
+      raf = requestAnimationFrame(frame);
+    };
+
+    raf = requestAnimationFrame(frame);
+    return () => cancelAnimationFrame(raf);
+  }, []);
 
   const statusLabel = connectionStatusLabel(connectionStatus);
 
