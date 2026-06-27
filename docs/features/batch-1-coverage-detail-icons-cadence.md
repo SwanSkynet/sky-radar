@@ -133,8 +133,9 @@ don't block first paint on the permission prompt.
    `swanskynet@gmail.com-api-client`); the secret goes only in the droplet's
    prod `.env` + GitHub Actions secrets — **never committed to the repo**. Run
    OpenSky **fully global** (no `OPENSKY_LAMIN/...` bbox) and at
-   `POLL_INTERVAL_SECONDS=15` (credentialed — conservative on the credit budget;
-   see Feature 3).
+   `POLL_INTERVAL_SECONDS=120` (a global `/states/all` costs 4 of the ~4000
+   daily credits, so ~86s is the sustainable floor; 15s exhausts the budget and
+   gets the account 429'd — see Feature 3).
 2. **Pin the two regional adapters to Southern California** (decided):
    `*_LAT=34.05`, `*_LON=-118.24`, `*_RADIUS_NM=250`. Rationale: dense commercial
    traffic (LAX/SAN/LAS) plus heavy military variety (Edwards, China Lake,
@@ -270,8 +271,11 @@ Two independent levers:
 
 1. **Interval tuning (backend, bounded by rate limits) — decided values:**
    - Regional adapters (adsb.lol, airplanes.live): `POLL_INTERVAL_SECONDS=10`.
-   - OpenSky: `POLL_INTERVAL_SECONDS=15` (credentialed; conservative on the
-     credit budget — do not go lower without watching credit/error metrics).
+   - OpenSky: `POLL_INTERVAL_SECONDS=120`. A global `/states/all` costs 4 of the
+     ~4000 daily OpenSky credits, so the sustainable floor is ~one call per 86s;
+     15s exhausts the daily budget within hours and OpenSky then returns HTTP 429
+     (empty global coverage) until the window resets. Do not lower without
+     accounting for the 4-credit global cost / watching `poll.errors`.
    - Normalizer: `MERGE_INTERVAL_SECONDS=10`.
    - Constraint: do **not** lower blindly; watch `skyradar.adapter.poll.errors`
      and stay within the master-PRD freshness SLO (P95 ≤ 15s). These are env
@@ -343,7 +347,7 @@ interval change.
 4. ~~**Regional-adapter pin**~~ — ✅ Southern California (`34.05, -118.24`,
    250 NM). Easily overridable via env.
 5. ~~**Detail-panel field set**~~ — ✅ see the field-set table in Feature 1.
-6. ~~**Cadence targets**~~ — ✅ regional poll 10s, OpenSky 15s, merge 10s, plus
+6. ~~**Cadence targets**~~ — ✅ regional poll 10s, OpenSky 120s (credit budget), merge 10s, plus
    client-side interpolation (Feature 3).
 
 All inputs resolved — this batch is ready to implement via the prompts in
