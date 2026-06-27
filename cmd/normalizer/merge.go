@@ -53,8 +53,16 @@ func Merge(icao24 string, raws []sourceadapter.RawState) (flightmodel.FlightStat
 	}
 
 	winner := pickWinner(reports)
-	typeSrc := pickTypeSource(reports, winner)
-	iconClass := classifyIcon(typeSrc)
+
+	// Type metadata is merged field-by-field rather than copied wholesale from
+	// one report, because providers can each contribute a different piece: one
+	// may carry the designator, another the emitter category, another the
+	// military flag. Pulling all three from a single report would silently drop
+	// whichever a different provider supplied.
+	aircraftType := pickAircraftType(reports, winner)
+	emitterCategory := pickEmitterCategory(reports, winner)
+	military := anyMilitary(reports)
+	iconClass := classifyIcon(aircraftType, emitterCategory, military)
 
 	return flightmodel.FlightState{
 		ICAO24:          strings.ToLower(icao24),
@@ -72,20 +80,21 @@ func Merge(icao24 string, raws []sourceadapter.RawState) (flightmodel.FlightStat
 		Sources:         sourceList(reports),
 		PositionQuality: winner.PositionQuality,
 		LastSeenUTC:     winner.LastSeenUTC,
-		AircraftType:    typeSrc.AircraftType,
-		EmitterCategory: typeSrc.EmitterCategory,
-		Military:        typeSrc.Military,
+		AircraftType:    aircraftType,
+		EmitterCategory: emitterCategory,
+		Military:        military,
 		IconClass:       iconClass,
 	}, nil
 }
 
-// pickTypeSource selects which report supplies the aircraft type / category /
-// military fields. A provider that supplies a type designator wins over one
-// that does not (OpenSky never carries type), so type data survives even when
-// the freshest positional report came from OpenSky. Among reports that carry a
-// designator, the same precedence as pickWinner applies; if none do, the
-// positional winner is used (it may still carry a military flag or category).
-func pickTypeSource(reports []providerReport, winner providerReport) providerReport {
+// pickAircraftType returns the ICAO type designator. A provider that supplies
+// one wins over a provider (e.g. OpenSky) that does not, so type survives even
+// when the freshest positional report carries none; among reports that do
+// carry a designator, the same precedence as pickWinner applies.
+func pickAircraftType(reports []providerReport, winner providerReport) *string {
+	if winner.AircraftType != nil {
+		return winner.AircraftType
+	}
 	typed := make([]providerReport, 0, len(reports))
 	for _, r := range reports {
 		if r.AircraftType != nil {
@@ -93,15 +102,45 @@ func pickTypeSource(reports []providerReport, winner providerReport) providerRep
 		}
 	}
 	if len(typed) == 0 {
-		return winner
+		return nil
 	}
-	return pickWinner(typed)
+	return pickWinner(typed).AircraftType
 }
 
-// classifyIcon derives the icon bucket for a report's type fields, returning
+// pickEmitterCategory returns the emitter category independently of the
+// designator, preferring the positional winner's value and otherwise taking
+// the highest-precedence report that carries one.
+func pickEmitterCategory(reports []providerReport, winner providerReport) *string {
+	if winner.EmitterCategory != nil {
+		return winner.EmitterCategory
+	}
+	categorized := make([]providerReport, 0, len(reports))
+	for _, r := range reports {
+		if r.EmitterCategory != nil {
+			categorized = append(categorized, r)
+		}
+	}
+	if len(categorized) == 0 {
+		return nil
+	}
+	return pickWinner(categorized).EmitterCategory
+}
+
+// anyMilitary ORs the military flag across all reports: if any provider flags
+// the aircraft as military, the merged state is military.
+func anyMilitary(reports []providerReport) bool {
+	for _, r := range reports {
+		if r.Military {
+			return true
+		}
+	}
+	return false
+}
+
+// classifyIcon derives the icon bucket for the merged type fields, returning
 // nil when nothing classifiable is available so the frontend draws a default.
-func classifyIcon(r providerReport) *string {
-	bucket := aircrafttype.Classify(r.AircraftType, r.EmitterCategory, r.Military)
+func classifyIcon(aircraftType, emitterCategory *string, military bool) *string {
+	bucket := aircrafttype.Classify(aircraftType, emitterCategory, military)
 	if bucket == "" {
 		return nil
 	}

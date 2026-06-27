@@ -56,7 +56,9 @@ describe("FlightDetailDrawer", () => {
     const drawer = screen.getByLabelText("flight detail");
     expect(within(drawer).getByText("UAL123")).toBeInTheDocument();
     expect(within(drawer).getByText("N12345")).toBeInTheDocument();
-    expect(within(drawer).getByText("A320 · commercial jet")).toBeInTheDocument();
+    expect(
+      within(drawer).getByText("A320 · commercial jet"),
+    ).toBeInTheDocument();
     expect(within(drawer).getByText("35000 ft")).toBeInTheDocument();
   });
 

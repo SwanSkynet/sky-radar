@@ -30,9 +30,9 @@ export function shouldInterpolate(flight: FlightState): boolean {
   return (
     !flight.on_ground &&
     !flight.stale &&
-    flight.ground_speed_kt != null &&
-    flight.ground_speed_kt > 0 &&
-    flight.heading_deg != null
+    Number.isFinite(flight.ground_speed_kt) &&
+    (flight.ground_speed_kt as number) > 0 &&
+    Number.isFinite(flight.heading_deg)
   );
 }
 

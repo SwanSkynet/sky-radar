@@ -22,7 +22,9 @@ export function decodeSquawkEmergency(squawk: string | null): string | null {
 // the drawer header is never empty.
 export function headerLabel(flight: FlightState): string {
   const callsign = flight.callsign?.trim();
-  return callsign && callsign.length > 0 ? callsign : flight.icao24.toUpperCase();
+  return callsign && callsign.length > 0
+    ? callsign
+    : flight.icao24.toUpperCase();
 }
 
 // verticalRateArrow returns a climb/descend indicator for a vertical rate in
@@ -37,10 +39,15 @@ export function verticalRateArrow(fpm: number | null): string {
 
 // secondsAgo returns whole seconds between lastSeenUtc and now (clamped at 0),
 // for the "last seen N s ago" provenance row.
-export function secondsAgo(lastSeenUtc: string, now: number = Date.now()): number {
+export function secondsAgo(
+  lastSeenUtc: string,
+  now: number = Date.now(),
+): number {
   const seen = new Date(lastSeenUtc).getTime();
   if (Number.isNaN(seen)) return 0;
-  return Math.max(0, Math.round((now - seen) / 1000));
+  // Floor (not round) so the displayed age stays monotonic and never jumps
+  // ahead of real elapsed time (e.g. "2 s ago" after only 1.5 s).
+  return Math.max(0, Math.floor((now - seen) / 1000));
 }
 
 // aircraftTypeLabel combines the raw ICAO designator with the classified icon
@@ -55,7 +62,9 @@ export function aircraftTypeLabel(flight: FlightState): string | null {
 }
 
 // positionQualityLabel maps the enum to a friendly label.
-export function positionQualityLabel(q: FlightState["position_quality"]): string {
+export function positionQualityLabel(
+  q: FlightState["position_quality"],
+): string {
   switch (q) {
     case "adsb":
       return "ADS-B";

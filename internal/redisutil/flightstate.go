@@ -2,6 +2,7 @@ package redisutil
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -152,7 +153,14 @@ func (c *Client) QueryFlightsByBBox(ctx context.Context, bbox geo.BBox) ([]fligh
 	for _, name := range candidates {
 		state, err := c.ReadFlightState(ctx, name)
 		if err != nil {
-			continue
+			// A member whose hash has since expired (the documented race
+			// between the candidate lookup and this read) is skipped; any
+			// other error (Redis failure, decode error) is real and surfaced
+			// rather than silently yielding an incomplete flight list.
+			if errors.Is(err, redis.Nil) {
+				continue
+			}
+			return nil, err
 		}
 		if bbox.Contains(state.Lat, state.Lon) {
 			states = append(states, state)

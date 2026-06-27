@@ -121,6 +121,21 @@ describe("useFlightStore", () => {
     expect(useFlightStore.getState().selectedIcao24).toBe("sel");
   });
 
+  it("setFlights clears a selection absent from the new snapshot but keeps a present one", () => {
+    useFlightStore.getState().upsertFlight(flight({ icao24: "sel" }));
+    useFlightStore.getState().select("sel");
+
+    // Snapshot still contains the selected aircraft: selection kept.
+    useFlightStore
+      .getState()
+      .setFlights([flight({ icao24: "sel" }), flight({ icao24: "other" })]);
+    expect(useFlightStore.getState().selectedIcao24).toBe("sel");
+
+    // Snapshot no longer contains it: selection cleared.
+    useFlightStore.getState().setFlights([flight({ icao24: "other" })]);
+    expect(useFlightStore.getState().selectedIcao24).toBeNull();
+  });
+
   it("setConnectionStatus tracks realtime-path health independently of per-aircraft staleness", () => {
     useFlightStore
       .getState()

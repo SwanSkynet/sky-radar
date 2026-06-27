@@ -55,7 +55,9 @@ function bboxToTuple(bbox: BBox): [number, number, number, number] {
   return [bbox.minLon, bbox.minLat, bbox.maxLon, bbox.maxLat];
 }
 
-const SELECTED_RING_COLOR: [number, number, number, number] = [255, 255, 255, 230];
+const SELECTED_RING_COLOR: [number, number, number, number] = [
+  255, 255, 255, 230,
+];
 
 // Base on-screen icon size in pixels; the selected aircraft is drawn a bit
 // larger on top of the selection ring.
@@ -134,6 +136,21 @@ function buildAircraftLayers(
     ...(isReplay ? [] : buildSelectionRing(flights, selectedIcao24)),
     buildAircraftIconLayer(flights, isReplay, selectedIcao24),
   ];
+}
+
+// handleAircraftClick selects a clicked aircraft / clears on empty-map click.
+// Defined at module scope because it only reads store state via getState(), so
+// it needs no component closure and is a stable reference for both render
+// paths. Replay mode is non-interactive for selection.
+function handleAircraftClick(info: PickingInfo) {
+  if (useReplayStore.getState().isActive) return;
+  const picked = info.object as FlightState | undefined;
+  const store = useFlightStore.getState();
+  if (picked?.icao24) {
+    store.select(picked.icao24);
+  } else {
+    store.clearSelection();
+  }
 }
 
 function connectionStatusLabel(status: ConnectionStatus): string | null {
@@ -313,57 +330,31 @@ export function MapView() {
     setConnectionStatus,
   ]);
 
-  // Render loop. Rather than rebuilding layers only when store data changes,
-  // a requestAnimationFrame loop advances live aircraft by dead reckoning
-  // every frame so motion is continuous between server updates, snapping back
-  // to authoritative positions as new updates arrive (Feature 3). Replay
-  // frames are rendered as-is (no extrapolation). All reactive inputs are read
-  // via getState() so the loop itself never needs to be re-created.
+  // Live render loop. A requestAnimationFrame loop advances live aircraft by
+  // dead reckoning every frame so motion is continuous between server updates,
+  // snapping back to authoritative positions as new updates arrive (Feature
+  // 3). It reads store state via getState() so the loop never needs
+  // re-creating, and skips work entirely while replay is active — replay is
+  // rendered by the state-driven effect below, not per frame.
   useEffect(() => {
     let raf = 0;
-
-    const onClick = (info: PickingInfo) => {
-      if (useReplayStore.getState().isActive) return;
-      const picked = info.object as FlightState | undefined;
-      const store = useFlightStore.getState();
-      if (picked?.icao24) {
-        store.select(picked.icao24);
-      } else {
-        store.clearSelection();
-      }
-    };
-
     const frame = () => {
       const overlay = overlayRef.current;
-      if (overlay) {
-        const replay = useReplayStore.getState();
-        if (replay.isActive) {
-          anchorsRef.current.clear();
-          const replayFlights = computeFlightsAtTime(
-            replay.samples,
-            replay.sampleTimesMs,
-            replay.scrubMs,
-          );
-          overlay.setProps({
-            layers: buildAircraftLayers(replayFlights, true, null),
-            onClick,
-          });
-        } else {
-          const flightStore = useFlightStore.getState();
-          const interpolated = applyInterpolation(
-            Object.values(flightStore.flights),
-            anchorsRef.current,
-            Date.now(),
-          );
-          overlay.setProps({
-            layers: buildAircraftLayers(
-              interpolated,
-              false,
-              flightStore.selectedIcao24,
-            ),
-            onClick,
-          });
-        }
+      if (overlay && !useReplayStore.getState().isActive) {
+        const flightStore = useFlightStore.getState();
+        const interpolated = applyInterpolation(
+          Object.values(flightStore.flights),
+          anchorsRef.current,
+          Date.now(),
+        );
+        overlay.setProps({
+          layers: buildAircraftLayers(
+            interpolated,
+            false,
+            flightStore.selectedIcao24,
+          ),
+          onClick: handleAircraftClick,
+        });
       }
       raf = requestAnimationFrame(frame);
     };
@@ -371,6 +362,20 @@ export function MapView() {
     raf = requestAnimationFrame(frame);
     return () => cancelAnimationFrame(raf);
   }, []);
+
+  // Replay render path. Replay frames don't move between scrubs, so they're
+  // rebuilt only when the scrubbed-to flight set changes — keeping the
+  // potentially expensive computeFlightsAtTime walk out of the RAF loop. The
+  // interpolation anchors are reset on entry so returning to live starts from
+  // fresh server positions.
+  useEffect(() => {
+    if (!isReplayActive) return;
+    anchorsRef.current.clear();
+    overlayRef.current?.setProps({
+      layers: buildAircraftLayers(replayFlights, true, null),
+      onClick: handleAircraftClick,
+    });
+  }, [isReplayActive, replayFlights]);
 
   const statusLabel = connectionStatusLabel(connectionStatus);
 

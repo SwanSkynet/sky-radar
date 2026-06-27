@@ -98,7 +98,7 @@ In your GitHub Repository, go to **Settings > Secrets and variables > Actions** 
 * `POSTGRES_USER`: (Optional) The username for the PostgreSQL database (defaults to `postgres`).
 * `POSTGRES_DB`: (Optional) The database name for the PostgreSQL database (defaults to `postgres`).
 * `POSTGRES_SSLMODE`: (Optional) The `sslmode` used by backend services connecting to PostgreSQL (defaults to `disable`, since `postgres` is only reachable over the internal Compose network). Set to `require` or stricter if PostgreSQL is moved off the internal network.
-* `OPENSKY_CLIENT_ID`: OAuth2 client ID for the OpenSky Network API, used by `adapter-opensky`. Provided value: `swanskynet@gmail.com-api-client`.
+* `OPENSKY_CLIENT_ID`: OAuth2 client ID for the OpenSky Network API, used by `adapter-opensky` (e.g. `<your-opensky-account>-api-client`). Set the real value only in the secret store, not in the repo.
 * `OPENSKY_CLIENT_SECRET`: OAuth2 client secret for the OpenSky Network API, used by `adapter-opensky`. **Secret — set only in GitHub Actions secrets and the droplet `.env`; never commit it to the repo.**
 
 ### 3. Ingest Coverage & Cadence

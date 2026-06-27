@@ -87,7 +87,10 @@ export function FlightDetailDrawer() {
   // rather than nothing, so the close affordance is still reachable.
   if (!flight) {
     return (
-      <DrawerShell onClose={clearSelection} title={selectedIcao24.toUpperCase()}>
+      <DrawerShell
+        onClose={clearSelection}
+        title={selectedIcao24.toUpperCase()}
+      >
         <div className="py-4 text-sm text-text/60">
           aircraft no longer in view
         </div>

@@ -51,10 +51,21 @@ export const useFlightStore = create<FlightStore>((set) => ({
     })),
 
   setFlights: (flights) =>
-    set({
-      flights: Object.fromEntries(flights.map((f) => [f.icao24, f])),
-      lastUpdated: new Date(),
-      error: null,
+    set((state) => {
+      const nextFlights = Object.fromEntries(flights.map((f) => [f.icao24, f]));
+      // A full snapshot replacement (e.g. the REST resume fallback) must also
+      // reconcile the selection, the same way retainWithinBBox does, so the
+      // drawer can't stay stuck on an aircraft absent from the new snapshot.
+      const selectedIcao24 =
+        state.selectedIcao24 && nextFlights[state.selectedIcao24]
+          ? state.selectedIcao24
+          : null;
+      return {
+        flights: nextFlights,
+        lastUpdated: new Date(),
+        error: null,
+        selectedIcao24,
+      };
     }),
 
   retainWithinBBox: (bbox) =>

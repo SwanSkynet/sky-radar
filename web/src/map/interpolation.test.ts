@@ -46,6 +46,14 @@ describe("shouldInterpolate", () => {
     expect(shouldInterpolate(flight({ ground_speed_kt: null }))).toBe(false);
     expect(shouldInterpolate(flight({ heading_deg: null }))).toBe(false);
   });
+
+  it("skips non-finite speed/heading so dead reckoning never yields NaN", () => {
+    expect(shouldInterpolate(flight({ heading_deg: NaN }))).toBe(false);
+    expect(shouldInterpolate(flight({ ground_speed_kt: NaN }))).toBe(false);
+    expect(shouldInterpolate(flight({ ground_speed_kt: Infinity }))).toBe(
+      false,
+    );
+  });
 });
 
 describe("deadReckon", () => {
@@ -76,9 +84,9 @@ describe("deadReckon", () => {
 
 describe("interpolatedPosition", () => {
   it("returns the anchor position for ineligible aircraft", () => {
-    expect(interpolatedPosition(flight({ on_ground: true }), 34, -118, 60)).toEqual([
-      -118, 34,
-    ]);
+    expect(
+      interpolatedPosition(flight({ on_ground: true }), 34, -118, 60),
+    ).toEqual([-118, 34]);
   });
 });
 

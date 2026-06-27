@@ -2,10 +2,11 @@
 
 ## Status
 
-Planning. This is a self-contained batch to implement **first**, ahead of the
+Implemented. This was a self-contained batch built **first**, ahead of the
 larger roadmap items (search/filters, watchlists, public-API depth) and ahead of
 the deferred **aircraft-type classification** subsystem (see
-[Out of scope](#out-of-scope-deferred)).
+[Out of scope](#out-of-scope-deferred)). It remains the design reference for the
+shipped behaviour.
 
 ## Summary
 
