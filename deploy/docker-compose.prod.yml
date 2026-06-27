@@ -64,9 +64,16 @@ services:
       - OPENSKY_CLIENT_SECRET=${OPENSKY_CLIENT_SECRET}
       # Run fully global (/states/all, no OPENSKY_LAMIN/LOMIN/LAMAX/LOMAX bbox)
       # so any viewport — including the whole world — returns worldwide aircraft.
-      # 15s is credentialed and conservative on the OAuth2 credit budget; do not
-      # lower without watching skyradar.adapter.poll.errors / credit metrics.
-      - POLL_INTERVAL_SECONDS=15
+      #
+      # A global /states/all call costs 4 OpenSky credits and the free
+      # authenticated tier is ~4000 credits/day, i.e. a sustainable rate of one
+      # call per ~86s. Polling faster (we previously used 15s) exhausts the daily
+      # budget within hours and OpenSky then returns HTTP 429 for the rest of the
+      # window — which is exactly why global coverage was empty. 120s stays well
+      # within budget (~2880 credits/day); client-side interpolation keeps motion
+      # smooth between the slower global refreshes. Do NOT lower this without
+      # accounting for the 4-credit global cost.
+      - POLL_INTERVAL_SECONDS=120
       - DEPLOY_ENV=production
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     depends_on:

@@ -111,7 +111,7 @@ and global, not from any camera behaviour.
 
 | Service | Env vars (prod compose) | Notes |
 |---------|-------------------------|-------|
-| `adapter-opensky` | `POLL_INTERVAL_SECONDS=15`; **no** `OPENSKY_LAMIN/LOMIN/LAMAX/LOMAX` | Fully global (`/states/all`). Credentialed via `OPENSKY_CLIENT_ID`/`OPENSKY_CLIENT_SECRET`. Carries **no** aircraft type. 15s is conservative on the OAuth2 credit budget — do not lower without watching `skyradar.adapter.poll.errors` / credit metrics. |
+| `adapter-opensky` | `POLL_INTERVAL_SECONDS=120`; **no** `OPENSKY_LAMIN/LOMIN/LAMAX/LOMAX` | Fully global (`/states/all`). Credentialed via `OPENSKY_CLIENT_ID`/`OPENSKY_CLIENT_SECRET`. Carries **no** aircraft type. A global `/states/all` costs **4 OpenSky credits**; the free authenticated tier is ~4000/day, so the sustainable rate is ~one call per 86s. 120s (~2880 credits/day) stays within budget — polling faster exhausts the budget and OpenSky returns HTTP 429 (empty global coverage) until the window resets. Do **not** lower without accounting for the 4-credit global cost. |
 | `adapter-adsblol` | `ADSBLOL_LAT=34.05`, `ADSBLOL_LON=-118.24`, `ADSBLOL_RADIUS_NM=250`, `POLL_INTERVAL_SECONDS=10` | Pinned to Southern California (LAX/SAN/LAS + Edwards/China Lake/Nellis). 250 NM is the provider cap. Source of aircraft type. |
 | `adapter-airplaneslive` | `AIRPLANES_LIVE_LAT=34.05`, `AIRPLANES_LIVE_LON=-118.24`, `AIRPLANES_LIVE_RADIUS_NM=250`, `POLL_INTERVAL_SECONDS=10` | Same SoCal pin; 250 NM cap. Source of aircraft type. |
 | `normalizer` | `MERGE_INTERVAL_SECONDS=10` | Merge cadence matched to the 10s adapter cadence. Stay within the master-PRD freshness SLO (P95 ≤ 15s). |
