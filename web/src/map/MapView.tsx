@@ -2,7 +2,11 @@ import { useEffect, useMemo, useRef } from "react";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { MapboxOverlay } from "@deck.gl/mapbox";
-import { ScatterplotLayer } from "@deck.gl/layers";
+import { IconLayer, ScatterplotLayer } from "@deck.gl/layers";
+import type { Layer } from "@deck.gl/core";
+import { iconDefFor, headingToIconAngle } from "./aircraftIcons";
+import { easeToUserLocation, WORLD_VIEW } from "./geolocation";
+import { applyInterpolation, type Anchor } from "./interpolation";
 import {
   fetchFlightsByBBox,
   type BBox,
@@ -14,6 +18,8 @@ import { useFlightStore } from "../store/useFlightStore";
 import { useReplayStore } from "../store/useReplayStore";
 import { computeFlightsAtTime } from "../replay/replayPlayback";
 import { ReplayScrubber } from "../replay/ReplayScrubber";
+import { FlightDetailDrawer } from "./FlightDetailDrawer";
+import type { PickingInfo } from "@deck.gl/core";
 
 // How often per-aircraft staleness is recomputed against the wall clock
 // (see useFlightStore.recomputeStaleness) — the WS push path only updates
@@ -49,23 +55,102 @@ function bboxToTuple(bbox: BBox): [number, number, number, number] {
   return [bbox.minLon, bbox.minLat, bbox.maxLon, bbox.maxLat];
 }
 
-function buildAircraftLayer(
+const SELECTED_RING_COLOR: [number, number, number, number] = [
+  255, 255, 255, 230,
+];
+
+// Base on-screen icon size in pixels; the selected aircraft is drawn a bit
+// larger on top of the selection ring.
+const ICON_SIZE_PX = 26;
+const ICON_SIZE_SELECTED_PX = 34;
+
+// buildAircraftIconLayer renders aircraft as heading-rotated, per-type SVG
+// icons. Icons are masks (see aircraftIcons.IconDef), so getColor carries the
+// existing fresh-blue / stale-grey / replay-amber semantics over from the old
+// ScatterplotLayer.
+function buildAircraftIconLayer(
   flights: FlightState[],
   isReplay: boolean,
-): ScatterplotLayer<FlightState> {
-  return new ScatterplotLayer<FlightState>({
+  selectedIcao24: string | null,
+): IconLayer<FlightState> {
+  return new IconLayer<FlightState>({
     id: "aircraft",
     data: flights,
     getPosition: (d) => [d.lon, d.lat],
-    getFillColor: isReplay
+    getIcon: (d) => iconDefFor(d.icon_class),
+    getAngle: (d) => headingToIconAngle(d.heading_deg),
+    getColor: isReplay
       ? REPLAY_COLOR
       : (d) => (d.stale ? STALE_COLOR : FRESH_COLOR),
-    getRadius: 6000,
-    radiusUnits: "meters",
-    radiusMinPixels: 3,
-    radiusMaxPixels: 8,
-    pickable: false,
+    getSize: (d) =>
+      d.icao24 === selectedIcao24 ? ICON_SIZE_SELECTED_PX : ICON_SIZE_PX,
+    sizeUnits: "pixels",
+    // Selection only applies to the live layer; replayed aircraft aren't
+    // clickable.
+    pickable: !isReplay,
+    updateTriggers: {
+      getColor: isReplay,
+      getSize: selectedIcao24,
+    },
   });
+}
+
+// buildSelectionRing draws a ring under the selected live aircraft so the
+// selection stays obvious beneath the icon. Returns an empty list when
+// nothing is selected or in replay mode.
+function buildSelectionRing(
+  flights: FlightState[],
+  selectedIcao24: string | null,
+): ScatterplotLayer<FlightState>[] {
+  const selected = selectedIcao24
+    ? flights.find((f) => f.icao24 === selectedIcao24)
+    : undefined;
+  if (!selected) return [];
+  return [
+    new ScatterplotLayer<FlightState>({
+      id: "selection-ring",
+      data: [selected],
+      getPosition: (d) => [d.lon, d.lat],
+      getFillColor: [0, 0, 0, 0],
+      stroked: true,
+      filled: true,
+      lineWidthUnits: "pixels",
+      getLineWidth: 2,
+      getLineColor: SELECTED_RING_COLOR,
+      radiusUnits: "pixels",
+      getRadius: 22,
+      radiusMinPixels: 22,
+      pickable: false,
+    }),
+  ];
+}
+
+// buildAircraftLayers composes the selection ring (if any) under the icon
+// layer.
+function buildAircraftLayers(
+  flights: FlightState[],
+  isReplay: boolean,
+  selectedIcao24: string | null,
+): Layer[] {
+  return [
+    ...(isReplay ? [] : buildSelectionRing(flights, selectedIcao24)),
+    buildAircraftIconLayer(flights, isReplay, selectedIcao24),
+  ];
+}
+
+// handleAircraftClick selects a clicked aircraft / clears on empty-map click.
+// Defined at module scope because it only reads store state via getState(), so
+// it needs no component closure and is a stable reference for both render
+// paths. Replay mode is non-interactive for selection.
+function handleAircraftClick(info: PickingInfo) {
+  if (useReplayStore.getState().isActive) return;
+  const picked = info.object as FlightState | undefined;
+  const store = useFlightStore.getState();
+  if (picked?.icao24) {
+    store.select(picked.icao24);
+  } else {
+    store.clearSelection();
+  }
 }
 
 function connectionStatusLabel(status: ConnectionStatus): string | null {
@@ -92,6 +177,9 @@ export function MapView() {
   const overlayRef = useRef<MapboxOverlay | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const replayAbortRef = useRef<AbortController | null>(null);
+  // Per-aircraft dead-reckoning anchors for client-side interpolation; keyed
+  // by icao24 and updated in place by the render loop (see interpolation.ts).
+  const anchorsRef = useRef<Map<string, Anchor>>(new Map());
 
   const flights = useFlightStore((s) => s.flights);
   const lastUpdated = useFlightStore((s) => s.lastUpdated);
@@ -161,11 +249,16 @@ export function MapView() {
     const map = new maplibregl.Map({
       container: containerRef.current,
       style: MAP_STYLE_URL,
-      center: [0, 20],
-      zoom: 2,
+      center: WORLD_VIEW.center,
+      zoom: WORLD_VIEW.zoom,
     });
 
     mapRef.current = map;
+
+    // Per-user view default: render the world view immediately, then ease to
+    // the visitor's location if/when geolocation permission is granted. This
+    // does not change what is ingested or the viewport query (see Feature 0).
+    easeToUserLocation(map);
 
     const overlay = new MapboxOverlay({ interleaved: true, layers: [] });
     overlayRef.current = overlay;
@@ -237,11 +330,52 @@ export function MapView() {
     setConnectionStatus,
   ]);
 
+  // Live render loop. A requestAnimationFrame loop advances live aircraft by
+  // dead reckoning every frame so motion is continuous between server updates,
+  // snapping back to authoritative positions as new updates arrive (Feature
+  // 3). It reads store state via getState() so the loop never needs
+  // re-creating, and skips work entirely while replay is active — replay is
+  // rendered by the state-driven effect below, not per frame.
   useEffect(() => {
+    let raf = 0;
+    const frame = () => {
+      const overlay = overlayRef.current;
+      if (overlay && !useReplayStore.getState().isActive) {
+        const flightStore = useFlightStore.getState();
+        const interpolated = applyInterpolation(
+          Object.values(flightStore.flights),
+          anchorsRef.current,
+          Date.now(),
+        );
+        overlay.setProps({
+          layers: buildAircraftLayers(
+            interpolated,
+            false,
+            flightStore.selectedIcao24,
+          ),
+          onClick: handleAircraftClick,
+        });
+      }
+      raf = requestAnimationFrame(frame);
+    };
+
+    raf = requestAnimationFrame(frame);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  // Replay render path. Replay frames don't move between scrubs, so they're
+  // rebuilt only when the scrubbed-to flight set changes — keeping the
+  // potentially expensive computeFlightsAtTime walk out of the RAF loop. The
+  // interpolation anchors are reset on entry so returning to live starts from
+  // fresh server positions.
+  useEffect(() => {
+    if (!isReplayActive) return;
+    anchorsRef.current.clear();
     overlayRef.current?.setProps({
-      layers: [buildAircraftLayer(displayedFlights, isReplayActive)],
+      layers: buildAircraftLayers(replayFlights, true, null),
+      onClick: handleAircraftClick,
     });
-  }, [displayedFlights, isReplayActive]);
+  }, [isReplayActive, replayFlights]);
 
   const statusLabel = connectionStatusLabel(connectionStatus);
 
@@ -282,6 +416,7 @@ export function MapView() {
           replay last 30 min
         </button>
       )}
+      {!isReplayActive && <FlightDetailDrawer />}
       <ReplayScrubber />
     </div>
   );

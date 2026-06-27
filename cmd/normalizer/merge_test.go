@@ -171,6 +171,103 @@ func TestMergeQualityTiebreak(t *testing.T) {
 	}
 }
 
+func TestMergeTypeSurvivesOpenSkyPositionalWinner(t *testing.T) {
+	t0 := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+
+	// OpenSky is the freshest positional report (and thus the positional
+	// winner), but carries no type. adsb.lol's type designator must still
+	// flow through, and the icon class must be derived from it.
+	opensky := openSkyRaw(t, "a1b2c3", t0.Add(3*time.Second), 0, 30.0, 30.0)
+	adsblol := readsbRaw(t, "adsb.lol", "a1b2c3", t0, map[string]any{
+		"lat": 30.1, "lon": 30.1, "t": "B738", "category": "A3", "type": "adsb_icao",
+	})
+
+	got, err := Merge("a1b2c3", []sourceadapter.RawState{opensky, adsblol})
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+
+	// Positional fields come from OpenSky (the freshest report)...
+	if got.Lat != 30.0 || got.Lon != 30.0 {
+		t.Errorf("Lat/Lon = %v/%v, want OpenSky's 30.0/30.0", got.Lat, got.Lon)
+	}
+	// ...but the type fields come from adsb.lol.
+	if got.AircraftType == nil || *got.AircraftType != "B738" {
+		t.Errorf("AircraftType = %v, want B738 (from adsb.lol)", got.AircraftType)
+	}
+	if got.IconClass == nil || *got.IconClass != "commercial_jet" {
+		t.Errorf("IconClass = %v, want commercial_jet", got.IconClass)
+	}
+}
+
+func TestMergeMilitaryFlagClassifies(t *testing.T) {
+	t0 := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+
+	raw := readsbRaw(t, "airplanes.live", "ae1234", t0, map[string]any{
+		"lat": 34.0, "lon": -118.0, "t": "KC135", "dbFlags": 1, "type": "adsb_icao",
+	})
+
+	got, err := Merge("ae1234", []sourceadapter.RawState{raw})
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	if !got.Military {
+		t.Error("Military = false, want true")
+	}
+	if got.IconClass == nil || *got.IconClass != "tanker" {
+		t.Errorf("IconClass = %v, want tanker", got.IconClass)
+	}
+}
+
+func TestMergeCombinesPartialTypeMetadataAcrossReports(t *testing.T) {
+	t0 := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+
+	// One provider carries only the designator; another (the fresher
+	// positional winner) carries only the military flag and emitter category.
+	// The merged state must keep all three rather than dropping whichever the
+	// non-winning provider supplied.
+	designatorOnly := readsbRaw(t, "adsb.lol", "ae1234", t0, map[string]any{
+		"lat": 34.0, "lon": -118.0, "t": "C17", "type": "adsb_icao",
+	})
+	flagsOnly := readsbRaw(t, "airplanes.live", "ae1234", t0.Add(2*time.Second), map[string]any{
+		"lat": 34.0, "lon": -118.0, "category": "A5", "dbFlags": 1, "type": "adsb_icao",
+	})
+
+	got, err := Merge("ae1234", []sourceadapter.RawState{designatorOnly, flagsOnly})
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	if got.AircraftType == nil || *got.AircraftType != "C17" {
+		t.Errorf("AircraftType = %v, want C17 (from adsb.lol)", got.AircraftType)
+	}
+	if got.EmitterCategory == nil || *got.EmitterCategory != "A5" {
+		t.Errorf("EmitterCategory = %v, want A5 (from airplanes.live)", got.EmitterCategory)
+	}
+	if !got.Military {
+		t.Error("Military = false, want true (OR of the dbFlags bit across reports)")
+	}
+	// military + C17 designator classifies to military_transport.
+	if got.IconClass == nil || *got.IconClass != "military_transport" {
+		t.Errorf("IconClass = %v, want military_transport", got.IconClass)
+	}
+}
+
+func TestMergeOpenSkyOnlyHasNoIconClass(t *testing.T) {
+	t0 := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+	raw := openSkyRaw(t, "a1b2c3", t0, 0, 30.0, 30.0)
+
+	got, err := Merge("a1b2c3", []sourceadapter.RawState{raw})
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	if got.AircraftType != nil {
+		t.Errorf("AircraftType = %v, want nil for OpenSky-only", got.AircraftType)
+	}
+	if got.IconClass != nil {
+		t.Errorf("IconClass = %v, want nil for OpenSky-only", got.IconClass)
+	}
+}
+
 func TestMergeThreeProvidersCreditsAllSources(t *testing.T) {
 	t0 := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
 

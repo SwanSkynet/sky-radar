@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SwanSkynet/sky-radar/internal/aircrafttype"
 	"github.com/SwanSkynet/sky-radar/internal/flightmodel"
 	"github.com/SwanSkynet/sky-radar/internal/sourceadapter"
 )
@@ -53,6 +54,16 @@ func Merge(icao24 string, raws []sourceadapter.RawState) (flightmodel.FlightStat
 
 	winner := pickWinner(reports)
 
+	// Type metadata is merged field-by-field rather than copied wholesale from
+	// one report, because providers can each contribute a different piece: one
+	// may carry the designator, another the emitter category, another the
+	// military flag. Pulling all three from a single report would silently drop
+	// whichever a different provider supplied.
+	aircraftType := pickAircraftType(reports, winner)
+	emitterCategory := pickEmitterCategory(reports, winner)
+	military := anyMilitary(reports)
+	iconClass := classifyIcon(aircraftType, emitterCategory, military)
+
 	return flightmodel.FlightState{
 		ICAO24:          strings.ToLower(icao24),
 		Callsign:        winner.Callsign,
@@ -69,7 +80,71 @@ func Merge(icao24 string, raws []sourceadapter.RawState) (flightmodel.FlightStat
 		Sources:         sourceList(reports),
 		PositionQuality: winner.PositionQuality,
 		LastSeenUTC:     winner.LastSeenUTC,
+		AircraftType:    aircraftType,
+		EmitterCategory: emitterCategory,
+		Military:        military,
+		IconClass:       iconClass,
 	}, nil
+}
+
+// pickAircraftType returns the ICAO type designator. A provider that supplies
+// one wins over a provider (e.g. OpenSky) that does not, so type survives even
+// when the freshest positional report carries none; among reports that do
+// carry a designator, the same precedence as pickWinner applies.
+func pickAircraftType(reports []providerReport, winner providerReport) *string {
+	if winner.AircraftType != nil {
+		return winner.AircraftType
+	}
+	typed := make([]providerReport, 0, len(reports))
+	for _, r := range reports {
+		if r.AircraftType != nil {
+			typed = append(typed, r)
+		}
+	}
+	if len(typed) == 0 {
+		return nil
+	}
+	return pickWinner(typed).AircraftType
+}
+
+// pickEmitterCategory returns the emitter category independently of the
+// designator, preferring the positional winner's value and otherwise taking
+// the highest-precedence report that carries one.
+func pickEmitterCategory(reports []providerReport, winner providerReport) *string {
+	if winner.EmitterCategory != nil {
+		return winner.EmitterCategory
+	}
+	categorized := make([]providerReport, 0, len(reports))
+	for _, r := range reports {
+		if r.EmitterCategory != nil {
+			categorized = append(categorized, r)
+		}
+	}
+	if len(categorized) == 0 {
+		return nil
+	}
+	return pickWinner(categorized).EmitterCategory
+}
+
+// anyMilitary ORs the military flag across all reports: if any provider flags
+// the aircraft as military, the merged state is military.
+func anyMilitary(reports []providerReport) bool {
+	for _, r := range reports {
+		if r.Military {
+			return true
+		}
+	}
+	return false
+}
+
+// classifyIcon derives the icon bucket for the merged type fields, returning
+// nil when nothing classifiable is available so the frontend draws a default.
+func classifyIcon(aircraftType, emitterCategory *string, military bool) *string {
+	bucket := aircrafttype.Classify(aircraftType, emitterCategory, military)
+	if bucket == "" {
+		return nil
+	}
+	return &bucket
 }
 
 // MergeAll groups raws by ICAO24 and merges each group independently. A

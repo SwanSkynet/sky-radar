@@ -20,6 +20,10 @@ function flight(overrides: Partial<FlightState> = {}): FlightState {
     position_quality: "adsb",
     last_seen_utc: new Date().toISOString(),
     stale: false,
+    aircraft_type: null,
+    emitter_category: null,
+    military: false,
+    icon_class: null,
     ...overrides,
   };
 }
@@ -31,6 +35,7 @@ describe("useFlightStore", () => {
       connectionStatus: "connecting",
       lastUpdated: null,
       error: null,
+      selectedIcao24: null,
     });
   });
 
@@ -80,6 +85,55 @@ describe("useFlightStore", () => {
     useFlightStore.getState().recomputeStaleness();
 
     expect(useFlightStore.getState().flights.aging.stale).toBe(true);
+  });
+
+  it("select sets the selected icao24 and clearSelection resets it", () => {
+    useFlightStore.getState().select("abc123");
+    expect(useFlightStore.getState().selectedIcao24).toBe("abc123");
+
+    useFlightStore.getState().clearSelection();
+    expect(useFlightStore.getState().selectedIcao24).toBeNull();
+  });
+
+  it("retainWithinBBox clears the selection when the selected aircraft pans out of view", () => {
+    useFlightStore
+      .getState()
+      .upsertFlight(flight({ icao24: "sel", lat: 1, lon: 1 }));
+    useFlightStore.getState().select("sel");
+
+    useFlightStore
+      .getState()
+      .retainWithinBBox({ minLon: 20, minLat: 20, maxLon: 30, maxLat: 30 });
+
+    expect(useFlightStore.getState().selectedIcao24).toBeNull();
+  });
+
+  it("retainWithinBBox keeps the selection when the selected aircraft stays in view", () => {
+    useFlightStore
+      .getState()
+      .upsertFlight(flight({ icao24: "sel", lat: 5, lon: 5 }));
+    useFlightStore.getState().select("sel");
+
+    useFlightStore
+      .getState()
+      .retainWithinBBox({ minLon: 0, minLat: 0, maxLon: 10, maxLat: 10 });
+
+    expect(useFlightStore.getState().selectedIcao24).toBe("sel");
+  });
+
+  it("setFlights clears a selection absent from the new snapshot but keeps a present one", () => {
+    useFlightStore.getState().upsertFlight(flight({ icao24: "sel" }));
+    useFlightStore.getState().select("sel");
+
+    // Snapshot still contains the selected aircraft: selection kept.
+    useFlightStore
+      .getState()
+      .setFlights([flight({ icao24: "sel" }), flight({ icao24: "other" })]);
+    expect(useFlightStore.getState().selectedIcao24).toBe("sel");
+
+    // Snapshot no longer contains it: selection cleared.
+    useFlightStore.getState().setFlights([flight({ icao24: "other" })]);
+    expect(useFlightStore.getState().selectedIcao24).toBeNull();
   });
 
   it("setConnectionStatus tracks realtime-path health independently of per-aircraft staleness", () => {

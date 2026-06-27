@@ -21,8 +21,14 @@ FlightState {
   position_quality: enum     // "adsb" | "mlat" | "estimated" — derived, see merge rule below
   last_seen_utc: timestamp
   stale: bool                // derived: now - last_seen_utc > staleness threshold (see master PRD SLOs)
+  aircraft_type: string | null     // raw ICAO type designator, e.g. "A320"; from adsb.lol/airplanes.live only
+  emitter_category: string | null  // ADS-B emitter category, e.g. "A5"/"A7"; from adsb.lol/airplanes.live only
+  military: bool                    // provider military flag (dbFlags bit 1); false when unknown
+  icon_class: string | null         // derived icon bucket (an SVG name in web/src/assets), see classifier below
 }
 ```
+
+**Aircraft type capture & classification (owned by the normalizer):** `aircraft_type` (`t`), `emitter_category` (`category`), and `military` (`dbFlags` bit 1) are captured from adsb.lol / airplanes.live; OpenSky's `/states/all` carries none of them, so they stay null/false for OpenSky-only aircraft. The type fields follow the same provider precedence as the rest of the merge, except a provider that supplies a type designator wins over one that does not (so type survives even when the freshest positional report came from OpenSky). `icon_class` is then derived by a small seed classifier (`internal/aircrafttype`) mapping type/category/military onto one of the frontend icon buckets; it is null when nothing classifiable is available, and the frontend draws a default icon in that case.
 
 **Multi-source merge precedence (owned by the normalizer, see [`system-architecture.md`](system-architecture.md)):**
 1. Prefer the report with the most recent `last_seen_utc`.

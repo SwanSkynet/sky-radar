@@ -47,6 +47,33 @@ This breaks each phase PRD into a build order. Sizing is relative effort (S / M 
 7. **Cost dashboard goes public** (S) — should already exist internally from Phase 2/3 cost tracking; this step is making it a public-facing panel.
 8. **Dry-run onboarding test** (M) — have someone unfamiliar with the codebase try to get a local stack running from docs alone; fix whatever they get stuck on.
 
+## Phase 5 — Map UX Batch 1 (post-Phase-4 feature work)
+
+Detailed spec: [`features/batch-1-coverage-detail-icons-cadence.md`](features/batch-1-coverage-detail-icons-cadence.md).
+Prompts: [`prompts/phase-5/`](../prompts/phase-5/). Built in this order because
+the later items depend on the earlier ones (type data must exist before icons can
+draw it).
+
+1. **Coverage & global ingest** (S) — config-only: OpenSky runs credentialed +
+   global, regional adapters pinned to a deliberate region (SoCal), tighter
+   cadence. Fixes the accidental SF-only live map. Ingestion is shared/server-side
+   and does **not** follow a user's camera; global coverage comes from OpenSky.
+2. **Aircraft type capture + classifier** (M) — capture type/category/military
+   from adsb.lol & airplanes.live, add nullable fields to `FlightState`
+   (data-model updated), plumb through Redis/API/WS, seed classifier → icon
+   buckets. Backend half of the icon feature.
+3. **Flight detail panel** (M) — clickable aircraft + live-updating detail drawer.
+4. **Geolocation initial center** (S) — open the map on the visitor's location,
+   world-view fallback; a per-user view default only.
+5. **Per-type SVG icons** (M) — `IconLayer` with heading rotation, class→SVG
+   from `web/src/assets`, default `commercial_jet`, staleness preserved.
+6. **Faster & smoother updates** (S) — client-side dead-reckoning interpolation
+   plus the tightened cadence from item 1.
+
+Deferred to a later batch: the full ICAO type-designator DB / military hex-range
+tables (this batch ships a small seed classifier), and a demand-following /
+multi-point regional poll grid.
+
 ## Cross-cutting notes
 
 - **Don't start Phase 2's event engine before Phase 1's merge logic has run in production for a while.** Event rules operate on the normalizer's output; if the merge logic has subtle bugs, building event rules on top of it just compounds the debugging surface later.

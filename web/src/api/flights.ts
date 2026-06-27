@@ -22,6 +22,16 @@ export interface FlightState {
   position_quality: PositionQuality;
   last_seen_utc: string;
   stale: boolean;
+  // Aircraft type metadata (phase-5 batch 1, Feature 2). Captured from
+  // adsb.lol / airplanes.live only; null/false for OpenSky-only aircraft
+  // (type can still be present when OpenSky wins the positional merge but a
+  // regional provider also reported the aircraft).
+  aircraft_type: string | null;
+  emitter_category: string | null;
+  military: boolean;
+  // Derived icon bucket (an SVG name in src/assets), or null when nothing
+  // classifiable was available — the map then draws a default icon.
+  icon_class: string | null;
 }
 
 export interface BBox {

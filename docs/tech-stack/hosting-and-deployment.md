@@ -98,8 +98,28 @@ In your GitHub Repository, go to **Settings > Secrets and variables > Actions** 
 * `POSTGRES_USER`: (Optional) The username for the PostgreSQL database (defaults to `postgres`).
 * `POSTGRES_DB`: (Optional) The database name for the PostgreSQL database (defaults to `postgres`).
 * `POSTGRES_SSLMODE`: (Optional) The `sslmode` used by backend services connecting to PostgreSQL (defaults to `disable`, since `postgres` is only reachable over the internal Compose network). Set to `require` or stricter if PostgreSQL is moved off the internal network.
-* `OPENSKY_CLIENT_ID`: OAuth2 client ID for the OpenSky Network API, used by `adapter-opensky`.
-* `OPENSKY_CLIENT_SECRET`: OAuth2 client secret for the OpenSky Network API, used by `adapter-opensky`.
+* `OPENSKY_CLIENT_ID`: OAuth2 client ID for the OpenSky Network API, used by `adapter-opensky` (e.g. `<your-opensky-account>-api-client`). Set the real value only in the secret store, not in the repo.
+* `OPENSKY_CLIENT_SECRET`: OAuth2 client secret for the OpenSky Network API, used by `adapter-opensky`. **Secret — set only in GitHub Actions secrets and the droplet `.env`; never commit it to the repo.**
 
-### 3. DNS Configuration
+### 3. Ingest Coverage & Cadence
+
+`deploy/docker-compose.prod.yml` configures the shared, server-side pollers.
+Ingestion is **decoupled from any user's viewport** — these adapters continuously
+fill Redis regardless of who is looking, and the frontend queries Redis by
+viewport bbox. Global coverage therefore comes from running OpenSky credentialed
+and global, not from any camera behaviour.
+
+| Service | Env vars (prod compose) | Notes |
+|---------|-------------------------|-------|
+| `adapter-opensky` | `POLL_INTERVAL_SECONDS=15`; **no** `OPENSKY_LAMIN/LOMIN/LAMAX/LOMAX` | Fully global (`/states/all`). Credentialed via `OPENSKY_CLIENT_ID`/`OPENSKY_CLIENT_SECRET`. Carries **no** aircraft type. 15s is conservative on the OAuth2 credit budget — do not lower without watching `skyradar.adapter.poll.errors` / credit metrics. |
+| `adapter-adsblol` | `ADSBLOL_LAT=34.05`, `ADSBLOL_LON=-118.24`, `ADSBLOL_RADIUS_NM=250`, `POLL_INTERVAL_SECONDS=10` | Pinned to Southern California (LAX/SAN/LAS + Edwards/China Lake/Nellis). 250 NM is the provider cap. Source of aircraft type. |
+| `adapter-airplaneslive` | `AIRPLANES_LIVE_LAT=34.05`, `AIRPLANES_LIVE_LON=-118.24`, `AIRPLANES_LIVE_RADIUS_NM=250`, `POLL_INTERVAL_SECONDS=10` | Same SoCal pin; 250 NM cap. Source of aircraft type. |
+| `normalizer` | `MERGE_INTERVAL_SECONDS=10` | Merge cadence matched to the 10s adapter cadence. Stay within the master-PRD freshness SLO (P95 ≤ 15s). |
+
+The SoCal pin is a deliberate high-traffic region (dense commercial + heavy
+military variety within 250 NM) so the per-type/military icons are exercised. It
+is a config choice — repin by overriding the `*_LAT`/`*_LON`/`*_RADIUS_NM` env
+vars.
+
+### 4. DNS Configuration
 Point your domain (e.g., `skyradar.swanathiyarath.com`) to the Droplet's IP address. Caddy will detect the request, secure a Let's Encrypt certificate, and handle HTTPS traffic automatically.

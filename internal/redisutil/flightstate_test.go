@@ -63,6 +63,61 @@ func TestWriteAndReadFlightState(t *testing.T) {
 	}
 }
 
+func TestWriteAndReadFlightStateTypeFields(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	want := sampleFlightState("ae1234", 34.05, -118.24)
+	acType := "KC135"
+	cat := "A5"
+	iconClass := "tanker"
+	want.AircraftType = &acType
+	want.EmitterCategory = &cat
+	want.Military = true
+	want.IconClass = &iconClass
+
+	if err := c.WriteFlightState(ctx, want, time.Minute); err != nil {
+		t.Fatalf("WriteFlightState: %v", err)
+	}
+	got, err := c.ReadFlightState(ctx, "ae1234")
+	if err != nil {
+		t.Fatalf("ReadFlightState: %v", err)
+	}
+
+	if got.AircraftType == nil || *got.AircraftType != acType {
+		t.Errorf("AircraftType = %v, want %s", got.AircraftType, acType)
+	}
+	if got.EmitterCategory == nil || *got.EmitterCategory != cat {
+		t.Errorf("EmitterCategory = %v, want %s", got.EmitterCategory, cat)
+	}
+	if !got.Military {
+		t.Error("Military = false, want true")
+	}
+	if got.IconClass == nil || *got.IconClass != iconClass {
+		t.Errorf("IconClass = %v, want %s", got.IconClass, iconClass)
+	}
+}
+
+func TestReadFlightStateTypeFieldsDefaultWhenAbsent(t *testing.T) {
+	// A flight written without the type fields (e.g. OpenSky-only) must
+	// decode with nil type fields and Military false, not a decode error.
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	want := sampleFlightState("a1b2c3", 37.6188, -122.3758)
+	if err := c.WriteFlightState(ctx, want, time.Minute); err != nil {
+		t.Fatalf("WriteFlightState: %v", err)
+	}
+	got, err := c.ReadFlightState(ctx, "a1b2c3")
+	if err != nil {
+		t.Fatalf("ReadFlightState: %v", err)
+	}
+	if got.AircraftType != nil || got.EmitterCategory != nil || got.Military || got.IconClass != nil {
+		t.Errorf("expected nil/false type fields, got type=%v cat=%v mil=%v icon=%v",
+			got.AircraftType, got.EmitterCategory, got.Military, got.IconClass)
+	}
+}
+
 func TestReadFlightStateMissingReturnsRedisNil(t *testing.T) {
 	c := newTestClient(t)
 	_, err := c.ReadFlightState(context.Background(), "doesnotexist")
@@ -150,6 +205,46 @@ func TestQueryFlightsByBBoxReturnsOnlyAircraftInside(t *testing.T) {
 	}
 	if got[0].ICAO24 != "aaaaaa" || got[1].ICAO24 != "bbbbbb" {
 		t.Errorf("ICAO24s = [%s, %s], want [aaaaaa, bbbbbb]", got[0].ICAO24, got[1].ICAO24)
+	}
+}
+
+// TestQueryFlightsByBBoxGlobalReturnsAllAircraft covers the full-scan
+// branch taken when a viewport is larger than maxGeoRadiusKM. In
+// production a near-global bbox returned zero aircraft because Redis
+// GEORADIUS's geohash search fails for planetary-scale radii; for such
+// viewports the query must enumerate the whole geo set instead, so even
+// aircraft on opposite sides of the globe come back.
+func TestQueryFlightsByBBoxGlobalReturnsAllAircraft(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	spread := []flightmodel.FlightState{
+		sampleFlightState("aaaaaa", 37.0, -122.0), // North America
+		sampleFlightState("bbbbbb", -33.9, 151.2), // Australia
+		sampleFlightState("cccccc", 64.1, -21.9),  // Iceland
+		sampleFlightState("dddddd", -54.8, -68.3), // South America
+		sampleFlightState("eeeeee", 1.35, 103.8),  // Singapore
+	}
+	for _, s := range spread {
+		if err := c.WriteFlightState(ctx, s, time.Minute); err != nil {
+			t.Fatalf("WriteFlightState(%s): %v", s.ICAO24, err)
+		}
+	}
+
+	bbox, err := geo.ParseBBox("-180,-90,180,90")
+	if err != nil {
+		t.Fatalf("ParseBBox: %v", err)
+	}
+	if bbox.RadiusKM() <= maxGeoRadiusKM {
+		t.Fatalf("test bbox radius %.0fkm must exceed maxGeoRadiusKM %d to exercise the full-scan branch", bbox.RadiusKM(), maxGeoRadiusKM)
+	}
+
+	got, err := c.QueryFlightsByBBox(ctx, bbox)
+	if err != nil {
+		t.Fatalf("QueryFlightsByBBox: %v", err)
+	}
+	if len(got) != len(spread) {
+		t.Fatalf("QueryFlightsByBBox(global) returned %d states, want %d: %+v", len(got), len(spread), got)
 	}
 }
 

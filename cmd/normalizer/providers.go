@@ -30,6 +30,9 @@ type providerReport struct {
 	OnGround        bool
 	Squawk          *string
 	PositionQuality flightmodel.PositionQuality
+	AircraftType    *string
+	EmitterCategory *string
+	Military        bool
 }
 
 // ParseRawState maps a provider's raw payload onto a providerReport,
@@ -143,6 +146,13 @@ type readsbAircraft struct {
 	Lat      *float64        `json:"lat"`
 	Lon      *float64        `json:"lon"`
 	Type     *string         `json:"type"`
+	// TypeDesignator is the ICAO aircraft type designator (e.g. "A320"),
+	// distinct from Type (the readsb position data-source field above).
+	TypeDesignator *string `json:"t"`
+	Category       *string `json:"category"`
+	// DbFlags is a bitmask; bit 1 (value 1) flags a military aircraft. See
+	// docs/api-docs/airplanes-live-docs.md.
+	DbFlags *int `json:"dbFlags"`
 }
 
 // parseReadsbAircraft decodes one adsb.lol or airplanes.live aircraft
@@ -189,6 +199,9 @@ func parseReadsbAircraft(provider string, payload json.RawMessage, fetchedAt tim
 		OnGround:        onGround,
 		Squawk:          ac.Squawk,
 		PositionQuality: positionQualityFromType(ac.Type),
+		AircraftType:    trimToNil(ac.TypeDesignator),
+		EmitterCategory: trimToNil(ac.Category),
+		Military:        ac.DbFlags != nil && *ac.DbFlags&1 != 0,
 	}, nil
 }
 
