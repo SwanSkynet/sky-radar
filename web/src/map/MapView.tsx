@@ -5,6 +5,7 @@ import { MapboxOverlay } from "@deck.gl/mapbox";
 import { IconLayer, ScatterplotLayer } from "@deck.gl/layers";
 import type { Layer } from "@deck.gl/core";
 import { iconDefFor, headingToIconAngle } from "./aircraftIcons";
+import { easeToUserLocation, WORLD_VIEW } from "./geolocation";
 import {
   fetchFlightsByBBox,
   type BBox,
@@ -230,11 +231,16 @@ export function MapView() {
     const map = new maplibregl.Map({
       container: containerRef.current,
       style: MAP_STYLE_URL,
-      center: [0, 20],
-      zoom: 2,
+      center: WORLD_VIEW.center,
+      zoom: WORLD_VIEW.zoom,
     });
 
     mapRef.current = map;
+
+    // Per-user view default: render the world view immediately, then ease to
+    // the visitor's location if/when geolocation permission is granted. This
+    // does not change what is ingested or the viewport query (see Feature 0).
+    easeToUserLocation(map);
 
     const overlay = new MapboxOverlay({ interleaved: true, layers: [] });
     overlayRef.current = overlay;
