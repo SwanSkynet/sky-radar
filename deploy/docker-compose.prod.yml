@@ -62,6 +62,11 @@ services:
       - REDIS_ADDR=redis:6379
       - OPENSKY_CLIENT_ID=${OPENSKY_CLIENT_ID}
       - OPENSKY_CLIENT_SECRET=${OPENSKY_CLIENT_SECRET}
+      # Run fully global (/states/all, no OPENSKY_LAMIN/LOMIN/LAMAX/LOMAX bbox)
+      # so any viewport — including the whole world — returns worldwide aircraft.
+      # 15s is credentialed and conservative on the OAuth2 credit budget; do not
+      # lower without watching skyradar.adapter.poll.errors / credit metrics.
+      - POLL_INTERVAL_SECONDS=15
       - DEPLOY_ENV=production
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     depends_on:
@@ -74,6 +79,14 @@ services:
     environment:
       - PORT=8082
       - REDIS_ADDR=redis:6379
+      # Pinned to Southern California (LAX/SAN/LAS + Edwards/China Lake/Nellis/
+      # Naval bases within 250 NM) so the per-type/military SVGs are exercised.
+      # Providers cap radius at 250 NM; this is a shared server-side poller, not
+      # camera-following. Override via env to repin.
+      - ADSBLOL_LAT=34.05
+      - ADSBLOL_LON=-118.24
+      - ADSBLOL_RADIUS_NM=250
+      - POLL_INTERVAL_SECONDS=10
       - DEPLOY_ENV=production
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     depends_on:
@@ -86,6 +99,12 @@ services:
     environment:
       - PORT=8083
       - REDIS_ADDR=redis:6379
+      # Pinned to Southern California — see adapter-adsblol above. Both regional
+      # adapters share the same pin so their 250 NM coverage overlaps.
+      - AIRPLANES_LIVE_LAT=34.05
+      - AIRPLANES_LIVE_LON=-118.24
+      - AIRPLANES_LIVE_RADIUS_NM=250
+      - POLL_INTERVAL_SECONDS=10
       - DEPLOY_ENV=production
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     depends_on:
@@ -99,6 +118,10 @@ services:
       - PORT=8084
       - REDIS_ADDR=redis:6379
       - NATS_URL=nats://nats:4222
+      # Merge as often as the tightened adapter cadence delivers (10s) so the
+      # normalizer doesn't become the freshness bottleneck. Stay within the
+      # master-PRD freshness SLO (P95 ≤ 15s).
+      - MERGE_INTERVAL_SECONDS=10
       - DEPLOY_ENV=production
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     depends_on:
