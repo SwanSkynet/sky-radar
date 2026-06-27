@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"errors"
 	"time"
 
 	"automation/activities"
@@ -61,8 +62,22 @@ func PipelineWorkflow(ctx workflow.Context) error {
 		}
 
 		var prNumber int
-		if err := workflow.ExecuteActivity(ctx, activities.CreatePR, *task).Get(ctx, &prNumber); err != nil {
-			return err
+		for {
+			err := workflow.ExecuteActivity(ctx, activities.CreatePR, *task).Get(ctx, &prNumber)
+			if err == nil {
+				break
+			}
+			var appErr *temporal.ApplicationError
+			if !errors.As(err, &appErr) || appErr.Type() != activities.ErrNoCommitsType {
+				return err
+			}
+			// Claude's prior session ended without committing anything (e.g. it
+			// was still waiting on a long-running command). Resume the task on
+			// the same branch instead of failing the whole pipeline.
+			logger.Info("No commits yet, continuing task", "id", task.ID)
+			if err := workflow.ExecuteActivity(claudeCtx, activities.ContinueWork, *task).Get(ctx, nil); err != nil {
+				return err
+			}
 		}
 		task.PR = prNumber
 		logger.Info("PR created", "pr", prNumber)

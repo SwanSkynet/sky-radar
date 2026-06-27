@@ -9,7 +9,16 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"go.temporal.io/sdk/temporal"
 )
+
+// ErrNoCommitsType is the temporal.ApplicationError type CreatePR uses when
+// the branch has no commits ahead of main yet (e.g. Claude's session ended
+// before it made any changes, such as while waiting on a long-running
+// command). Callers can match on this via errors.As + ApplicationError.Type()
+// to resume the task instead of treating it as a hard failure.
+const ErrNoCommitsType = "NoCommits"
 
 // Review status values returned by FetchReviewStatus.
 const (
@@ -46,6 +55,10 @@ func CreatePR(ctx context.Context, task Task) (int, error) {
 	)
 	cmd.Dir = root
 	if out, err := cmd.CombinedOutput(); err != nil {
+		if strings.Contains(string(out), "No commits between") {
+			return 0, temporal.NewApplicationError(
+				fmt.Sprintf("no commits on branch %s yet", task.Branch), ErrNoCommitsType)
+		}
 		return 0, fmt.Errorf("gh pr create failed: %w: %s", err, string(out))
 	}
 

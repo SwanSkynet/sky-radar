@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -215,6 +217,66 @@ func TestPersistAndPublishSkipsPublishWhenWriteFails(t *testing.T) {
 		t.Fatal("PublishFlightState was called despite a failed Redis write")
 	case <-runCtx.Done():
 	}
+}
+
+// TestPersistAndPublishAllWritesAndPublishesEveryState exercises
+// persistAndPublishAll's bounded worker pool with a state count well above
+// mergeConcurrency, asserting every state is both persisted to Redis and
+// published to flights.updates despite running concurrently rather than one
+// at a time (see the merge-cycle-duration finding in
+// docs/runbooks/load-test.md).
+func TestPersistAndPublishAllWritesAndPublishesEveryState(t *testing.T) {
+	redisClient := testRedisClient(t)
+	publisher, sub := testPublisher(t)
+	ctx := context.Background()
+
+	const stateCount = mergeConcurrency * 3
+	states := make([]flightmodel.FlightState, stateCount)
+	now := time.Now().UTC()
+	for i := range states {
+		states[i] = flightmodel.FlightState{
+			ICAO24:      icao24ForIndex(i),
+			Lat:         1.0,
+			Lon:         2.0,
+			LastSeenUTC: now,
+		}
+	}
+
+	received := make(map[string]struct{}, stateCount)
+	var mu sync.Mutex
+	done := make(chan struct{})
+	runCtx, runCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer runCancel()
+
+	go func() {
+		_ = sub.Run(runCtx, nil, func(state flightmodel.FlightState, _ time.Time) {
+			mu.Lock()
+			received[state.ICAO24] = struct{}{}
+			n := len(received)
+			mu.Unlock()
+			if n == stateCount {
+				close(done)
+			}
+		})
+	}()
+
+	persistAndPublishAll(ctx, testLogger(), redisClient, publisher, states, time.Minute)
+
+	select {
+	case <-done:
+	case <-time.After(4 * time.Second):
+		t.Fatalf("timed out: received %d of %d published states", len(received), stateCount)
+	}
+
+	for _, state := range states {
+		if _, err := redisClient.ReadFlightState(context.Background(), state.ICAO24); err != nil {
+			t.Errorf("ReadFlightState(%s): %v", state.ICAO24, err)
+		}
+	}
+}
+
+func icao24ForIndex(i int) string {
+	return fmt.Sprintf("a%05x", i)
 }
 
 func TestRunMergeLoopWritesNothingWhenNoRawState(t *testing.T) {

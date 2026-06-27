@@ -80,6 +80,46 @@ worker process's memory.
   won't redeliver that activity to a new worker until its timeout elapses
   (up to an hour, see retries below) rather than instantly.
 
+## Recovering from a stuck run
+
+If the worker log goes quiet with no new lines and no `claude -p` process
+running (`ps aux | grep "claude -p"`), the most likely cause is an **orphaned
+activity**: a worker died (or was killed) mid-`RunClaude`/`AddressFeedback`/
+`ContinueWork`. These activities have `HeartbeatTimeout: 0s`, so Temporal has
+no way to detect the worker is gone — it won't reassign the activity to a new
+worker until its full retry timeout elapses (up to the 14h
+`ScheduleToCloseTimeout`), even if you start a fresh worker right away.
+
+To recover immediately instead of waiting:
+
+```bash
+docker exec temporal-admin-tools tctl workflow describe -w claude-pipeline-run
+# look at pendingActivities: a "Started" activity whose lastWorkerIdentity
+# matches a process that's no longer running (ps aux) is the orphan.
+
+docker exec temporal-admin-tools tctl workflow terminate -w claude-pipeline-run \
+  --reason "orphaned activity, no live worker"
+
+cd automation && go run ./starter   # safe — resumes from .done markers, not memory
+```
+
+If the pending activity instead shows `state: "Scheduled"` with a `lastFailure`
+like `unable to find activityType=X` (the worker that grabbed it died before
+running it), it doesn't need terminating — just start a worker; Temporal will
+retry once the activity's backoff timer fires (5min–1h per the Claude retry
+policy above). Terminating + restarting skips that wait if you'd rather not.
+
+**A second, unrelated cause of "stuck": the app's own stack isn't running.**
+Tasks that load-test or otherwise exercise the live system (e.g.
+`phase-3-*-load-test-*`) need the product's services up, not just Temporal's:
+```bash
+cd .. && docker compose up -d   # repo root, NOT automation/ — Redis/NATS/Postgres/apigateway/etc.
+```
+If those containers are down, every load test fails instantly (e.g. `redis:
+... connection refused`), and Claude will keep retrying and failing in a loop
+that looks identical to a hang from the outside. Check `docker ps -a` for
+recently-`Exited` `sky-radar-*` containers if a task seems to be spinning.
+
 ## How it knows what to do next
 
 Two independent layers, neither of which lives in the worker process:

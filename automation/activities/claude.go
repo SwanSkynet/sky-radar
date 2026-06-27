@@ -62,6 +62,31 @@ func RunClaude(ctx context.Context, task Task) error {
 	return commitAndPush(ctx, root, task.Branch, "Automated: "+task.ID)
 }
 
+// ContinueWork re-invokes Claude on the task's existing branch after a prior
+// invocation ended without committing anything (e.g. the session ended while
+// still waiting on a long-running command like a load test). It resumes on
+// the same branch instead of starting the task over.
+func ContinueWork(ctx context.Context, task Task) error {
+	root, err := RepoRoot()
+	if err != nil {
+		return err
+	}
+	if err := runGit(ctx, root, "checkout", task.Branch); err != nil {
+		return fmt.Errorf("checking out branch %s: %w", task.Branch, err)
+	}
+
+	prompt := scopeNote + fmt.Sprintf(
+		"You previously started the following task on this branch but the session ended "+
+			"before any changes were committed (e.g. it ended while waiting on a long-running "+
+			"command). Continue and finish the task now:\n\n%s",
+		task.Prompt,
+	)
+	if err := invokeClaude(ctx, root, prompt); err != nil {
+		return err
+	}
+	return commitAndPush(ctx, root, task.Branch, "Automated: "+task.ID)
+}
+
 // AddressFeedback re-invokes Claude on the task's existing branch with
 // feedback appended, then commits + pushes the fix. source describes where
 // the feedback came from (e.g. "CodeRabbit's review" or "a failing CI

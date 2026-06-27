@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -42,6 +43,17 @@ const (
 	// distinct from Stale=true (meaning "tracked but not recently updated"),
 	// per docs/tech-stack/data-and-messaging.md.
 	defaultFlightStateTTL = 90 * time.Second
+
+	// mergeConcurrency bounds how many persistAndPublish calls (one Redis
+	// pipeline + one JetStream publish-ack each) run at once per merge
+	// cycle. The load test in docs/runbooks/load-test.md found that running
+	// these strictly sequentially made merge-cycle duration scale linearly
+	// with tracked-aircraft count (~0.2ms/flight), which by itself ate a
+	// growing share of the 15s merge interval as the fleet grew toward the
+	// master PRD's 50,000-entity headroom target. Bounding rather than
+	// fully parallelizing avoids opening more concurrent Redis/NATS
+	// round-trips than the underlying client pools are sized for.
+	mergeConcurrency = 128
 )
 
 // otelMeter and the instruments below are created against otel's global,
@@ -172,9 +184,7 @@ func runMergeLoop(ctx context.Context, logger *slog.Logger, redisClient *redisut
 			logger.Error("scan raw states failed", "err", err)
 		} else {
 			states := MergeAll(raws)
-			for _, state := range states {
-				persistAndPublish(ctx, logger, redisClient, publisher, state, ttl)
-			}
+			persistAndPublishAll(ctx, logger, redisClient, publisher, states, ttl)
 			mergeCycleDuration.Record(ctx, time.Since(cycleStart).Seconds())
 			mergeCycleFlights.Add(ctx, int64(len(states)))
 			logger.Info("merge cycle complete", "raw_count", len(raws), "flight_count", len(states))
@@ -192,6 +202,25 @@ func runMergeLoop(ctx context.Context, logger *slog.Logger, redisClient *redisut
 		case <-ticker.C:
 		}
 	}
+}
+
+// persistAndPublishAll runs persistAndPublish for every state concurrently,
+// bounded by mergeConcurrency in-flight calls at once, so one merge cycle's
+// wall-clock cost approaches one Redis+NATS round trip rather than
+// len(states) of them run back to back.
+func persistAndPublishAll(ctx context.Context, logger *slog.Logger, redisClient *redisutil.Client, publisher *natsutil.FlightStatePublisher, states []flightmodel.FlightState, ttl time.Duration) {
+	sem := make(chan struct{}, mergeConcurrency)
+	var wg sync.WaitGroup
+	for _, state := range states {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(state flightmodel.FlightState) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			persistAndPublish(ctx, logger, redisClient, publisher, state, ttl)
+		}(state)
+	}
+	wg.Wait()
 }
 
 // persistAndPublish writes state to Redis hot state and, only if that
