@@ -213,6 +213,10 @@ func encodeFlightState(state flightmodel.FlightState) map[string]any {
 		"sources":           strings.Join(state.Sources, ","),
 		"position_quality":  string(state.PositionQuality),
 		"last_seen_utc":     state.LastSeenUTC.UTC().Format(time.RFC3339Nano),
+		"aircraft_type":     stringOrEmpty(state.AircraftType),
+		"emitter_category":  stringOrEmpty(state.EmitterCategory),
+		"military":          strconv.FormatBool(state.Military),
+		"icon_class":        stringOrEmpty(state.IconClass),
 	}
 }
 
@@ -260,6 +264,16 @@ func decodeFlightState(fields map[string]string) (flightmodel.FlightState, error
 		sources = strings.Split(v, ",")
 	}
 
+	// military may be absent on hashes written before this field existed;
+	// treat absent/empty as false rather than a decode error.
+	var military bool
+	if v := fields["military"]; v != "" {
+		military, err = strconv.ParseBool(v)
+		if err != nil {
+			return flightmodel.FlightState{}, fmt.Errorf("decode military: %w", err)
+		}
+	}
+
 	return flightmodel.FlightState{
 		ICAO24:          fields["icao24"],
 		Callsign:        stringOrNil(fields["callsign"]),
@@ -276,6 +290,10 @@ func decodeFlightState(fields map[string]string) (flightmodel.FlightState, error
 		Sources:         sources,
 		PositionQuality: flightmodel.PositionQuality(fields["position_quality"]),
 		LastSeenUTC:     lastSeen,
+		AircraftType:    stringOrNil(fields["aircraft_type"]),
+		EmitterCategory: stringOrNil(fields["emitter_category"]),
+		Military:        military,
+		IconClass:       stringOrNil(fields["icon_class"]),
 	}, nil
 }
 

@@ -54,6 +54,10 @@ func TestFlightStateSchema(t *testing.T) {
 		{"PositionQuality", "position_quality", "flightmodel.PositionQuality"},
 		{"LastSeenUTC", "last_seen_utc", "time.Time"},
 		{"Stale", "stale", "bool"},
+		{"AircraftType", "aircraft_type", "*string"},
+		{"EmitterCategory", "emitter_category", "*string"},
+		{"Military", "military", "bool"},
+		{"IconClass", "icon_class", "*string"},
 	})
 }
 
@@ -91,6 +95,7 @@ func TestFlightStateJSONRoundTrip(t *testing.T) {
 		"altitude_baro_ft", "altitude_geo_ft", "ground_speed_kt",
 		"vertical_rate_fpm", "heading_deg", "on_ground", "squawk",
 		"sources", "position_quality", "last_seen_utc", "stale",
+		"aircraft_type", "emitter_category", "military", "icon_class",
 	} {
 		if _, ok := decoded[key]; !ok {
 			t.Errorf("missing wire field %q in marshaled output", key)

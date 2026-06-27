@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SwanSkynet/sky-radar/internal/aircrafttype"
 	"github.com/SwanSkynet/sky-radar/internal/flightmodel"
 	"github.com/SwanSkynet/sky-radar/internal/sourceadapter"
 )
@@ -52,6 +53,8 @@ func Merge(icao24 string, raws []sourceadapter.RawState) (flightmodel.FlightStat
 	}
 
 	winner := pickWinner(reports)
+	typeSrc := pickTypeSource(reports, winner)
+	iconClass := classifyIcon(typeSrc)
 
 	return flightmodel.FlightState{
 		ICAO24:          strings.ToLower(icao24),
@@ -69,7 +72,40 @@ func Merge(icao24 string, raws []sourceadapter.RawState) (flightmodel.FlightStat
 		Sources:         sourceList(reports),
 		PositionQuality: winner.PositionQuality,
 		LastSeenUTC:     winner.LastSeenUTC,
+		AircraftType:    typeSrc.AircraftType,
+		EmitterCategory: typeSrc.EmitterCategory,
+		Military:        typeSrc.Military,
+		IconClass:       iconClass,
 	}, nil
+}
+
+// pickTypeSource selects which report supplies the aircraft type / category /
+// military fields. A provider that supplies a type designator wins over one
+// that does not (OpenSky never carries type), so type data survives even when
+// the freshest positional report came from OpenSky. Among reports that carry a
+// designator, the same precedence as pickWinner applies; if none do, the
+// positional winner is used (it may still carry a military flag or category).
+func pickTypeSource(reports []providerReport, winner providerReport) providerReport {
+	typed := make([]providerReport, 0, len(reports))
+	for _, r := range reports {
+		if r.AircraftType != nil {
+			typed = append(typed, r)
+		}
+	}
+	if len(typed) == 0 {
+		return winner
+	}
+	return pickWinner(typed)
+}
+
+// classifyIcon derives the icon bucket for a report's type fields, returning
+// nil when nothing classifiable is available so the frontend draws a default.
+func classifyIcon(r providerReport) *string {
+	bucket := aircrafttype.Classify(r.AircraftType, r.EmitterCategory, r.Military)
+	if bucket == "" {
+		return nil
+	}
+	return &bucket
 }
 
 // MergeAll groups raws by ICAO24 and merges each group independently. A

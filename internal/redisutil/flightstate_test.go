@@ -63,6 +63,61 @@ func TestWriteAndReadFlightState(t *testing.T) {
 	}
 }
 
+func TestWriteAndReadFlightStateTypeFields(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	want := sampleFlightState("ae1234", 34.05, -118.24)
+	acType := "KC135"
+	cat := "A5"
+	iconClass := "tanker"
+	want.AircraftType = &acType
+	want.EmitterCategory = &cat
+	want.Military = true
+	want.IconClass = &iconClass
+
+	if err := c.WriteFlightState(ctx, want, time.Minute); err != nil {
+		t.Fatalf("WriteFlightState: %v", err)
+	}
+	got, err := c.ReadFlightState(ctx, "ae1234")
+	if err != nil {
+		t.Fatalf("ReadFlightState: %v", err)
+	}
+
+	if got.AircraftType == nil || *got.AircraftType != acType {
+		t.Errorf("AircraftType = %v, want %s", got.AircraftType, acType)
+	}
+	if got.EmitterCategory == nil || *got.EmitterCategory != cat {
+		t.Errorf("EmitterCategory = %v, want %s", got.EmitterCategory, cat)
+	}
+	if !got.Military {
+		t.Error("Military = false, want true")
+	}
+	if got.IconClass == nil || *got.IconClass != iconClass {
+		t.Errorf("IconClass = %v, want %s", got.IconClass, iconClass)
+	}
+}
+
+func TestReadFlightStateTypeFieldsDefaultWhenAbsent(t *testing.T) {
+	// A flight written without the type fields (e.g. OpenSky-only) must
+	// decode with nil type fields and Military false, not a decode error.
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	want := sampleFlightState("a1b2c3", 37.6188, -122.3758)
+	if err := c.WriteFlightState(ctx, want, time.Minute); err != nil {
+		t.Fatalf("WriteFlightState: %v", err)
+	}
+	got, err := c.ReadFlightState(ctx, "a1b2c3")
+	if err != nil {
+		t.Fatalf("ReadFlightState: %v", err)
+	}
+	if got.AircraftType != nil || got.EmitterCategory != nil || got.Military || got.IconClass != nil {
+		t.Errorf("expected nil/false type fields, got type=%v cat=%v mil=%v icon=%v",
+			got.AircraftType, got.EmitterCategory, got.Military, got.IconClass)
+	}
+}
+
 func TestReadFlightStateMissingReturnsRedisNil(t *testing.T) {
 	c := newTestClient(t)
 	_, err := c.ReadFlightState(context.Background(), "doesnotexist")

@@ -103,6 +103,57 @@ func TestParseReadsbAircraftNumericAltitude(t *testing.T) {
 	}
 }
 
+func TestParseReadsbAircraftCapturesTypeFields(t *testing.T) {
+	payload := []byte(`{"hex":"ae1234","t":"C130","r":"01-1234","category":"A5","dbFlags":1,"alt_baro":25000,"type":"adsb_icao"}`)
+
+	got, err := parseReadsbAircraft("airplanes.live", payload, time.Now())
+	if err != nil {
+		t.Fatalf("parseReadsbAircraft: %v", err)
+	}
+	if got.AircraftType == nil || *got.AircraftType != "C130" {
+		t.Errorf("AircraftType = %v, want C130", got.AircraftType)
+	}
+	if got.EmitterCategory == nil || *got.EmitterCategory != "A5" {
+		t.Errorf("EmitterCategory = %v, want A5", got.EmitterCategory)
+	}
+	if !got.Military {
+		t.Error("Military = false, want true for dbFlags bit 1")
+	}
+}
+
+func TestParseReadsbAircraftNonMilitaryDbFlags(t *testing.T) {
+	// dbFlags bit 1 clear (e.g. 8 = LADD) must not flag military.
+	payload := []byte(`{"hex":"a1b2c3","t":"A320","dbFlags":8,"alt_baro":30000,"type":"adsb_icao"}`)
+
+	got, err := parseReadsbAircraft("adsb.lol", payload, time.Now())
+	if err != nil {
+		t.Fatalf("parseReadsbAircraft: %v", err)
+	}
+	if got.Military {
+		t.Error("Military = true, want false when dbFlags bit 1 is clear")
+	}
+}
+
+func TestParseOpenSkyLeavesTypeFieldsNil(t *testing.T) {
+	vector := []any{
+		"3c6444", "DLH123 ", "Germany", 1458564118, 1458564118,
+		9.9935, 53.5553, 11300.8, false, 222.5, 40.7, 0.0,
+		[]int{12345}, 11100.0, "7000", false, 0, 0,
+	}
+	payload, err := json.Marshal(vector)
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+	got, err := parseOpenSkyStateVector(payload, time.Now())
+	if err != nil {
+		t.Fatalf("parseOpenSkyStateVector: %v", err)
+	}
+	if got.AircraftType != nil || got.EmitterCategory != nil || got.Military {
+		t.Errorf("OpenSky report should carry no type fields, got type=%v cat=%v mil=%v",
+			got.AircraftType, got.EmitterCategory, got.Military)
+	}
+}
+
 func TestParseReadsbAircraftGroundString(t *testing.T) {
 	payload := []byte(`{"hex":"45211e","alt_baro":"ground","type":"adsb_icao"}`)
 
