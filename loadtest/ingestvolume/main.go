@@ -158,7 +158,7 @@ func main() {
 			AircraftCovered:        len(covered),
 			CoveragePct:            coveragePct,
 			Percentiles:            percentiles,
-			Verdict:                report.FreshnessVerdict(percentiles.P95),
+			Verdict:                report.FreshnessVerdict(percentiles),
 		}); err != nil {
 			logger.Error("write json report failed", "err", err)
 		}

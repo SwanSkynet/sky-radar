@@ -113,7 +113,7 @@ go run ./loadtest/viewportchurn \
 Both harnesses print a one-line config banner, periodic progress logs,
 and a final summary ending in a `report.PrintFreshness` line shaped like:
 
-```
+```text
 ingest-to-flights.updates freshness: count=18234 min=0.41s p50=2.10s p95=7.84s p99=12.30s max=41.02s -> PASS
 ```
 

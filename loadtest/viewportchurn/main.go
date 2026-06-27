@@ -80,6 +80,7 @@ func main() {
 			select {
 			case <-time.After(delay):
 			case <-ctx.Done():
+				results[idx] = clientResult{id: idx, connectErr: ctx.Err()}
 				return
 			}
 			results[idx] = runClient(ctx, idx, cfg, samples)
@@ -116,7 +117,7 @@ func main() {
 			TotalMessages:    summary.totalMessages,
 			HandshakeLatency: summary.handshake,
 			Percentiles:      percentiles,
-			Verdict:          report.FreshnessVerdict(percentiles.P95),
+			Verdict:          report.FreshnessVerdict(percentiles),
 		}); err != nil {
 			logger.Error("write json report failed", "err", err)
 		}

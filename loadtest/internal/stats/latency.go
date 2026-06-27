@@ -5,7 +5,10 @@
 // compare against the master PRD's SLO table.
 package stats
 
-import "sort"
+import (
+	"math"
+	"sort"
+)
 
 // Latencies collects latency samples (in seconds) from a load-test run and
 // computes percentiles over them. Not safe for concurrent use; callers
@@ -68,9 +71,16 @@ func (l *Latencies) Compute() Percentiles {
 // comparison against an SLO threshold, not for statistically precise
 // distribution analysis.
 func percentileOf(sorted []float64, p float64) float64 {
-	if len(sorted) == 1 {
+	n := len(sorted)
+	if n == 1 {
 		return sorted[0]
 	}
-	idx := int(p * float64(len(sorted)-1))
+	idx := int(math.Ceil(p*float64(n))) - 1
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= n {
+		idx = n - 1
+	}
 	return sorted[idx]
 }

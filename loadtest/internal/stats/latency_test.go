@@ -48,6 +48,39 @@ func TestComputeKnownDistribution(t *testing.T) {
 	}
 }
 
+func TestComputeSmallSample(t *testing.T) {
+	// Nearest-rank on tiny samples should pick the upper element for high
+	// percentiles rather than rounding down to the lower one.
+	var l Latencies
+	l.Add(1)
+	l.Add(2)
+	got := l.Compute()
+	if got.P50 != 1 {
+		t.Errorf("P50 = %v, want 1 (2 samples)", got.P50)
+	}
+	if got.P95 != 2 {
+		t.Errorf("P95 = %v, want 2 (2 samples)", got.P95)
+	}
+	if got.P99 != 2 {
+		t.Errorf("P99 = %v, want 2 (2 samples)", got.P99)
+	}
+
+	var l3 Latencies
+	l3.Add(1)
+	l3.Add(2)
+	l3.Add(3)
+	got3 := l3.Compute()
+	if got3.P50 != 2 {
+		t.Errorf("P50 = %v, want 2 (3 samples)", got3.P50)
+	}
+	if got3.P95 != 3 {
+		t.Errorf("P95 = %v, want 3 (3 samples)", got3.P95)
+	}
+	if got3.P99 != 3 {
+		t.Errorf("P99 = %v, want 3 (3 samples)", got3.P99)
+	}
+}
+
 func TestComputeUnordered(t *testing.T) {
 	var l Latencies
 	for _, v := range []float64{5, 1, 4, 2, 3} {

@@ -23,12 +23,16 @@ const (
 	FreshnessDegradedSeconds = 60.0
 )
 
-// FreshnessVerdict classifies a P95 latency against the SLO thresholds.
-func FreshnessVerdict(p95Seconds float64) string {
+// FreshnessVerdict classifies a Percentiles snapshot's P95 latency against
+// the SLO thresholds. A zero-sample snapshot (Count == 0) never passes —
+// otherwise an empty run's zero-valued P95 would read as "within target".
+func FreshnessVerdict(p stats.Percentiles) string {
 	switch {
-	case p95Seconds <= FreshnessTargetSeconds:
+	case p.Count == 0:
+		return "FAIL (no samples recorded)"
+	case p.P95 <= FreshnessTargetSeconds:
 		return "PASS"
-	case p95Seconds <= FreshnessDegradedSeconds:
+	case p.P95 <= FreshnessDegradedSeconds:
 		return "WARN (within degraded-mode threshold, above SLO target)"
 	default:
 		return "FAIL (exceeds degraded-mode threshold)"
@@ -43,7 +47,7 @@ func PrintFreshness(w io.Writer, name string, p stats.Percentiles) {
 		return
 	}
 	fmt.Fprintf(w, "%s: count=%d min=%.2fs p50=%.2fs p95=%.2fs p99=%.2fs max=%.2fs -> %s\n",
-		name, p.Count, p.Min, p.P50, p.P95, p.P99, p.Max, FreshnessVerdict(p.P95))
+		name, p.Count, p.Min, p.P50, p.P95, p.P99, p.Max, FreshnessVerdict(p))
 }
 
 // PrintHeader writes a consistent run banner so saved logs are easy to
