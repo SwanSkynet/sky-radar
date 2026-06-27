@@ -2,6 +2,7 @@ package otelutil
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -100,12 +101,12 @@ func (p *Providers) Shutdown(ctx context.Context) error {
 	tracerErr := p.TracerProvider.Shutdown(ctx)
 	meterErr := p.MeterProvider.Shutdown(ctx)
 	if tracerErr != nil {
-		return fmt.Errorf("otelutil: shutdown tracer provider: %w", tracerErr)
+		tracerErr = fmt.Errorf("otelutil: shutdown tracer provider: %w", tracerErr)
 	}
 	if meterErr != nil {
-		return fmt.Errorf("otelutil: shutdown meter provider: %w", meterErr)
+		meterErr = fmt.Errorf("otelutil: shutdown meter provider: %w", meterErr)
 	}
-	return nil
+	return errors.Join(tracerErr, meterErr)
 }
 
 // WrapHTTPHandler instruments next with otelhttp so every request gets a

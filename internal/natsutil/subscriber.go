@@ -72,7 +72,9 @@ func (s *FlightStateSubscriber) Run(ctx context.Context, onErr func(error), hand
 		}
 		ingestedAt := time.Now()
 		if meta, err := msg.Metadata(); err == nil {
-			ingestedAt = meta.Timestamp
+			if !meta.Timestamp.After(ingestedAt) {
+				ingestedAt = meta.Timestamp
+			}
 		} else if onErr != nil {
 			onErr(fmt.Errorf("natsutil: message metadata: %w", err))
 		}

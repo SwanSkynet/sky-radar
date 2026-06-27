@@ -81,17 +81,27 @@ func newWSHub() *wsHub {
 // client disconnects.
 func (h *wsHub) register(c *wsClient) {
 	h.mu.Lock()
-	h.clients[c] = struct{}{}
+	_, exists := h.clients[c]
+	if !exists {
+		h.clients[c] = struct{}{}
+	}
 	h.mu.Unlock()
-	wsActiveConnections.Add(context.Background(), 1)
+	if !exists {
+		wsActiveConnections.Add(context.Background(), 1)
+	}
 }
 
 // unregister removes c from the broadcast set.
 func (h *wsHub) unregister(c *wsClient) {
 	h.mu.Lock()
-	delete(h.clients, c)
+	_, exists := h.clients[c]
+	if exists {
+		delete(h.clients, c)
+	}
 	h.mu.Unlock()
-	wsActiveConnections.Add(context.Background(), -1)
+	if exists {
+		wsActiveConnections.Add(context.Background(), -1)
+	}
 }
 
 // broadcast delivers msg to every registered client whose viewport
@@ -107,7 +117,6 @@ func (h *wsHub) broadcast(msg natsutil.FlightStateMessage) {
 		}
 		select {
 		case c.send <- msg:
-			wsMessagesSent.Add(context.Background(), 1)
 		default:
 		}
 	}

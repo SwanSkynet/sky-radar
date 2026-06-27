@@ -180,6 +180,7 @@ func (g *wsGateway) replayResume(ctx context.Context, conn *websocket.Conn, clie
 		if err := wsjson.Write(ctx, conn, wsServerMessage{Type: wsMsgTypeFlightUpdate, Seq: fsMsg.Sequence, State: &fsMsg.State}); err != nil {
 			return 0, fmt.Errorf("write resume backlog message: %w", err)
 		}
+		wsMessagesSent.Add(ctx, 1)
 	}
 
 	if len(backlog) == 0 {
@@ -215,6 +216,7 @@ func (g *wsGateway) serve(ctx context.Context, conn *websocket.Conn, client *wsC
 				g.logger.Warn("websocket write failed", "err", err)
 				return
 			}
+			wsMessagesSent.Add(ctx, 1)
 			lastDeliveredSeq = fsMsg.Sequence
 		}
 	}
