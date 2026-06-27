@@ -14,6 +14,8 @@ import { useFlightStore } from "../store/useFlightStore";
 import { useReplayStore } from "../store/useReplayStore";
 import { computeFlightsAtTime } from "../replay/replayPlayback";
 import { ReplayScrubber } from "../replay/ReplayScrubber";
+import { FlightDetailDrawer } from "./FlightDetailDrawer";
+import type { PickingInfo } from "@deck.gl/core";
 
 // How often per-aircraft staleness is recomputed against the wall clock
 // (see useFlightStore.recomputeStaleness) — the WS push path only updates
@@ -49,9 +51,12 @@ function bboxToTuple(bbox: BBox): [number, number, number, number] {
   return [bbox.minLon, bbox.minLat, bbox.maxLon, bbox.maxLat];
 }
 
+const SELECTED_LINE_COLOR: [number, number, number, number] = [255, 255, 255, 255];
+
 function buildAircraftLayer(
   flights: FlightState[],
   isReplay: boolean,
+  selectedIcao24: string | null,
 ): ScatterplotLayer<FlightState> {
   return new ScatterplotLayer<FlightState>({
     id: "aircraft",
@@ -60,11 +65,23 @@ function buildAircraftLayer(
     getFillColor: isReplay
       ? REPLAY_COLOR
       : (d) => (d.stale ? STALE_COLOR : FRESH_COLOR),
-    getRadius: 6000,
+    // The selected aircraft is drawn larger with a white outline so it stays
+    // distinguishable from the rest of the live layer.
+    getRadius: (d) => (d.icao24 === selectedIcao24 ? 10000 : 6000),
     radiusUnits: "meters",
     radiusMinPixels: 3,
     radiusMaxPixels: 8,
-    pickable: false,
+    stroked: true,
+    lineWidthUnits: "pixels",
+    getLineWidth: (d) => (d.icao24 === selectedIcao24 ? 2 : 0),
+    getLineColor: SELECTED_LINE_COLOR,
+    // Selection only applies to the live layer; replayed aircraft aren't
+    // clickable.
+    pickable: !isReplay,
+    updateTriggers: {
+      getRadius: selectedIcao24,
+      getLineWidth: selectedIcao24,
+    },
   });
 }
 
@@ -103,6 +120,9 @@ export function MapView() {
   const recomputeStaleness = useFlightStore((s) => s.recomputeStaleness);
   const setConnectionStatus = useFlightStore((s) => s.setConnectionStatus);
   const setError = useFlightStore((s) => s.setError);
+  const selectedIcao24 = useFlightStore((s) => s.selectedIcao24);
+  const select = useFlightStore((s) => s.select);
+  const clearSelection = useFlightStore((s) => s.clearSelection);
 
   const flightList = Object.values(flights);
 
@@ -239,9 +259,22 @@ export function MapView() {
 
   useEffect(() => {
     overlayRef.current?.setProps({
-      layers: [buildAircraftLayer(displayedFlights, isReplayActive)],
+      layers: [
+        buildAircraftLayer(displayedFlights, isReplayActive, selectedIcao24),
+      ],
+      // Clicking an aircraft selects it; clicking empty map clears the
+      // selection. Replay mode is non-interactive for selection.
+      onClick: (info: PickingInfo) => {
+        if (isReplayActive) return;
+        const picked = info.object as FlightState | undefined;
+        if (picked?.icao24) {
+          select(picked.icao24);
+        } else {
+          clearSelection();
+        }
+      },
     });
-  }, [displayedFlights, isReplayActive]);
+  }, [displayedFlights, isReplayActive, selectedIcao24, select, clearSelection]);
 
   const statusLabel = connectionStatusLabel(connectionStatus);
 
@@ -282,6 +315,7 @@ export function MapView() {
           replay last 30 min
         </button>
       )}
+      {!isReplayActive && <FlightDetailDrawer />}
       <ReplayScrubber />
     </div>
   );

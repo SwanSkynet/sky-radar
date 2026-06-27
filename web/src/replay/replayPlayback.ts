@@ -51,5 +51,10 @@ function sampleToFlightState(sample: ReplaySample): FlightState {
     position_quality: "adsb",
     last_seen_utc: sample.recorded_at,
     stale: false,
+    // Downsampled replay history carries no type metadata.
+    aircraft_type: null,
+    emitter_category: null,
+    military: false,
+    icon_class: null,
   };
 }

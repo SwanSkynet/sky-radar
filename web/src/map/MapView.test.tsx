@@ -126,6 +126,10 @@ function sampleFlight(overrides: Partial<FlightState> = {}): FlightState {
     position_quality: "adsb",
     last_seen_utc: new Date().toISOString(),
     stale: false,
+    aircraft_type: null,
+    emitter_category: null,
+    military: false,
+    icon_class: null,
     ...overrides,
   };
 }

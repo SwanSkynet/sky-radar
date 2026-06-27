@@ -20,6 +20,10 @@ interface FlightStore {
   connectionStatus: ConnectionStatus;
   lastUpdated: Date | null;
   error: string | null;
+  // The aircraft the user clicked, tracked by icao24 (not object reference)
+  // so the detail drawer keeps showing fresh data as new WS messages upsert
+  // that aircraft. Null when nothing is selected.
+  selectedIcao24: string | null;
   upsertFlight: (flight: FlightState) => void;
   setFlights: (flights: FlightState[]) => void;
   // Drops tracked aircraft outside bbox, e.g. after the user pans/zooms
@@ -28,6 +32,8 @@ interface FlightStore {
   recomputeStaleness: () => void;
   setConnectionStatus: (status: ConnectionStatus) => void;
   setError: (error: string | null) => void;
+  select: (icao24: string) => void;
+  clearSelection: () => void;
 }
 
 export const useFlightStore = create<FlightStore>((set) => ({
@@ -35,6 +41,7 @@ export const useFlightStore = create<FlightStore>((set) => ({
   connectionStatus: "connecting",
   lastUpdated: null,
   error: null,
+  selectedIcao24: null,
 
   upsertFlight: (flight) =>
     set((state) => ({
@@ -51,8 +58,8 @@ export const useFlightStore = create<FlightStore>((set) => ({
     }),
 
   retainWithinBBox: (bbox) =>
-    set((state) => ({
-      flights: Object.fromEntries(
+    set((state) => {
+      const flights = Object.fromEntries(
         Object.entries(state.flights).filter(
           ([, f]) =>
             f.lon >= bbox.minLon &&
@@ -60,8 +67,15 @@ export const useFlightStore = create<FlightStore>((set) => ({
             f.lat >= bbox.minLat &&
             f.lat <= bbox.maxLat,
         ),
-      ),
-    })),
+      );
+      // Drop the selection if the selected aircraft panned out of view, so
+      // the detail drawer doesn't linger on an aircraft no longer tracked.
+      const selectedIcao24 =
+        state.selectedIcao24 && flights[state.selectedIcao24]
+          ? state.selectedIcao24
+          : null;
+      return { flights, selectedIcao24 };
+    }),
 
   recomputeStaleness: () =>
     set((state) => {
@@ -81,4 +95,6 @@ export const useFlightStore = create<FlightStore>((set) => ({
 
   setConnectionStatus: (connectionStatus) => set({ connectionStatus }),
   setError: (error) => set({ error }),
+  select: (icao24) => set({ selectedIcao24: icao24 }),
+  clearSelection: () => set({ selectedIcao24: null }),
 }));
