@@ -18,6 +18,20 @@ import (
 // layout.
 const GeoSetKey = "flights:geo"
 
+// maxGeoRadiusKM bounds the radius QueryFlightsByBBox will hand to Redis
+// GEORADIUS. Redis's geohash-based radius search silently returns an empty
+// result once the search circle approaches planetary scale (a near-global
+// bbox's center-to-corner distance is ~20000km), which manifested in
+// production as a zoomed-out / whole-world viewport showing zero aircraft
+// even though regional viewports returned data. Any viewport whose
+// covering radius exceeds this threshold is answered by scanning the whole
+// flights:geo set and filtering with BBox.Contains instead — always
+// correct, and the geo set is bounded by the count of currently tracked
+// aircraft. 5000km keeps city/regional/country viewports (the common case,
+// radius well under ~3000km) on the indexed GEORADIUS path while routing
+// continental-and-larger viewports to the scan.
+const maxGeoRadiusKM = 5000
+
 // FlightKey returns the Redis key for one aircraft's current canonical
 // FlightState hash.
 func FlightKey(icao24 string) string {
@@ -117,15 +131,51 @@ func (c *Client) PruneExpiredGeoMembers(ctx context.Context) (int, error) {
 
 // QueryFlightsByBBox returns the current FlightState for every aircraft
 // within bbox, querying the flights:geo geo index per
-// docs/architecture/data-model.md. It uses Redis's GEORADIUS (rather than
-// the newer GEOSEARCH BYBOX) to size the initial candidate set — see
-// geo.BBox.RadiusKM for why — then filters that circular result set down
-// to bbox's exact rectangle before returning.
+// docs/architecture/data-model.md. For viewports up to continental scale
+// it uses Redis's GEORADIUS (rather than the newer GEOSEARCH BYBOX — see
+// geo.BBox.RadiusKM for why) to size the initial candidate set; for larger
+// viewports, where GEORADIUS's geohash search breaks down (see
+// maxGeoRadiusKM), it falls back to enumerating the whole geo set. Either
+// candidate set is then filtered down to bbox's exact rectangle with
+// Contains before returning.
 //
-// A geo-set member whose hash has since expired (a race between GEORADIUS
-// and the per-member read that follows it) is skipped rather than failing
-// the whole query.
+// A geo-set member whose hash has since expired (a race between the
+// candidate lookup and the per-member read that follows it) is skipped
+// rather than failing the whole query.
 func (c *Client) QueryFlightsByBBox(ctx context.Context, bbox geo.BBox) ([]flightmodel.FlightState, error) {
+	candidates, err := c.bboxCandidates(ctx, bbox)
+	if err != nil {
+		return nil, err
+	}
+
+	states := make([]flightmodel.FlightState, 0, len(candidates))
+	for _, name := range candidates {
+		state, err := c.ReadFlightState(ctx, name)
+		if err != nil {
+			continue
+		}
+		if bbox.Contains(state.Lat, state.Lon) {
+			states = append(states, state)
+		}
+	}
+
+	sort.Slice(states, func(i, j int) bool { return states[i].ICAO24 < states[j].ICAO24 })
+	return states, nil
+}
+
+// bboxCandidates returns the icao24 members to read and bbox-filter for a
+// QueryFlightsByBBox call. It picks GEORADIUS for viewports Redis can
+// reliably search and a full geo-set scan for ones too large for it (see
+// maxGeoRadiusKM).
+func (c *Client) bboxCandidates(ctx context.Context, bbox geo.BBox) ([]string, error) {
+	if bbox.RadiusKM() > maxGeoRadiusKM {
+		members, err := c.rdb.ZRange(ctx, GeoSetKey, 0, -1).Result()
+		if err != nil {
+			return nil, fmt.Errorf("redisutil: query flights by bbox (full scan): %w", err)
+		}
+		return members, nil
+	}
+
 	centerLon, centerLat := bbox.Center()
 
 	//nolint:staticcheck // GeoRadius is deprecated in favor of GeoSearch, but
@@ -139,19 +189,11 @@ func (c *Client) QueryFlightsByBBox(ctx context.Context, bbox geo.BBox) ([]fligh
 		return nil, fmt.Errorf("redisutil: query flights by bbox: %w", err)
 	}
 
-	states := make([]flightmodel.FlightState, 0, len(locations))
+	names := make([]string, 0, len(locations))
 	for _, loc := range locations {
-		state, err := c.ReadFlightState(ctx, loc.Name)
-		if err != nil {
-			continue
-		}
-		if bbox.Contains(state.Lat, state.Lon) {
-			states = append(states, state)
-		}
+		names = append(names, loc.Name)
 	}
-
-	sort.Slice(states, func(i, j int) bool { return states[i].ICAO24 < states[j].ICAO24 })
-	return states, nil
+	return names, nil
 }
 
 func encodeFlightState(state flightmodel.FlightState) map[string]any {

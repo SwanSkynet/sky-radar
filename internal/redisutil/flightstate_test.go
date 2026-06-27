@@ -153,6 +153,46 @@ func TestQueryFlightsByBBoxReturnsOnlyAircraftInside(t *testing.T) {
 	}
 }
 
+// TestQueryFlightsByBBoxGlobalReturnsAllAircraft covers the full-scan
+// branch taken when a viewport is larger than maxGeoRadiusKM. In
+// production a near-global bbox returned zero aircraft because Redis
+// GEORADIUS's geohash search fails for planetary-scale radii; for such
+// viewports the query must enumerate the whole geo set instead, so even
+// aircraft on opposite sides of the globe come back.
+func TestQueryFlightsByBBoxGlobalReturnsAllAircraft(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	spread := []flightmodel.FlightState{
+		sampleFlightState("aaaaaa", 37.0, -122.0), // North America
+		sampleFlightState("bbbbbb", -33.9, 151.2), // Australia
+		sampleFlightState("cccccc", 64.1, -21.9),  // Iceland
+		sampleFlightState("dddddd", -54.8, -68.3), // South America
+		sampleFlightState("eeeeee", 1.35, 103.8),  // Singapore
+	}
+	for _, s := range spread {
+		if err := c.WriteFlightState(ctx, s, time.Minute); err != nil {
+			t.Fatalf("WriteFlightState(%s): %v", s.ICAO24, err)
+		}
+	}
+
+	bbox, err := geo.ParseBBox("-180,-90,180,90")
+	if err != nil {
+		t.Fatalf("ParseBBox: %v", err)
+	}
+	if bbox.RadiusKM() <= maxGeoRadiusKM {
+		t.Fatalf("test bbox radius %.0fkm must exceed maxGeoRadiusKM %d to exercise the full-scan branch", bbox.RadiusKM(), maxGeoRadiusKM)
+	}
+
+	got, err := c.QueryFlightsByBBox(ctx, bbox)
+	if err != nil {
+		t.Fatalf("QueryFlightsByBBox: %v", err)
+	}
+	if len(got) != len(spread) {
+		t.Fatalf("QueryFlightsByBBox(global) returned %d states, want %d: %+v", len(got), len(spread), got)
+	}
+}
+
 func TestPruneExpiredGeoMembersRemovesEntriesWithoutAHash(t *testing.T) {
 	c := newTestClient(t)
 	ctx := context.Background()
