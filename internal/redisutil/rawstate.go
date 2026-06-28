@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/SwanSkynet/sky-radar/internal/sourceadapter"
@@ -38,6 +39,38 @@ func (c *Client) WriteRawState(ctx context.Context, state sourceadapter.RawState
 		return fmt.Errorf("redisutil: write raw state %s: %w", key, err)
 	}
 	return nil
+}
+
+// WriteRawStatesConcurrently calls WriteRawState for every entry in states,
+// bounded by concurrency in-flight writes at once, so writing a full poll
+// batch costs approximately one Redis round trip rather than len(states) of
+// them run back to back. Every adapter (cmd/adapter-opensky,
+// cmd/adapter-adsblol, cmd/adapter-airplaneslive) and the ingest-volume load
+// test wrote their poll batches with a plain sequential for-loop until the
+// load test in docs/runbooks/load-test.md showed that loop's wall-clock cost
+// growing linearly with batch size eating into the per-aircraft freshness
+// budget as tracked-aircraft count rose toward the master PRD's 50,000
+// headroom target — the same scaling problem persistAndPublishAll already
+// solved on the normalizer's publish side. onError, if non-nil, is called
+// for each write that fails; it must be safe to call concurrently.
+func (c *Client) WriteRawStatesConcurrently(ctx context.Context, states []sourceadapter.RawState, ttl time.Duration, concurrency int, onError func(sourceadapter.RawState, error)) {
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	for _, state := range states {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(state sourceadapter.RawState) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if err := c.WriteRawState(ctx, state, ttl); err != nil && onError != nil {
+				onError(state, err)
+			}
+		}(state)
+	}
+	wg.Wait()
 }
 
 // ReadRawState fetches and decodes the raw payload previously written by

@@ -177,6 +177,7 @@ func runMergeLoop(ctx context.Context, logger *slog.Logger, redisClient *redisut
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	lastPublished := make(map[string]time.Time)
 	for {
 		cycleStart := time.Now()
 		raws, err := redisClient.ScanRawStates(ctx)
@@ -184,7 +185,7 @@ func runMergeLoop(ctx context.Context, logger *slog.Logger, redisClient *redisut
 			logger.Error("scan raw states failed", "err", err)
 		} else {
 			states := MergeAll(raws)
-			persistAndPublishAll(ctx, logger, redisClient, publisher, states, ttl)
+			lastPublished = persistAndPublishAll(ctx, logger, redisClient, publisher, states, ttl, lastPublished)
 			mergeCycleDuration.Record(ctx, time.Since(cycleStart).Seconds())
 			mergeCycleFlights.Add(ctx, int64(len(states)))
 			logger.Info("merge cycle complete", "raw_count", len(raws), "flight_count", len(states))
@@ -208,34 +209,67 @@ func runMergeLoop(ctx context.Context, logger *slog.Logger, redisClient *redisut
 // bounded by mergeConcurrency in-flight calls at once, so one merge cycle's
 // wall-clock cost approaches one Redis+NATS round trip rather than
 // len(states) of them run back to back.
-func persistAndPublishAll(ctx context.Context, logger *slog.Logger, redisClient *redisutil.Client, publisher *natsutil.FlightStatePublisher, states []flightmodel.FlightState, ttl time.Duration) {
+//
+// lastPublished maps icao24 to the LastSeenUTC most recently published for
+// it; a state whose LastSeenUTC matches is unchanged since the last cycle
+// (its raw report hasn't been refreshed) and is written to Redis — so its
+// hot-state TTL still gets renewed — but not re-published. raw:* entries
+// live for raw-state-ttl (minutes), which spans several merge intervals, so
+// without this check every still-current-but-unchanged aircraft would be
+// re-merged and re-published on every single cycle: the load test in
+// docs/runbooks/load-test.md showed this flooding flights.updates with
+// duplicate messages carrying an increasingly stale LastSeenUTC, which both
+// wastes Redis/NATS throughput and corrupts the freshness SLO measurement
+// (P95 latency tracked the redundant republish gap, not genuine ingest
+// latency). The returned map reflects only the states passed in, so an
+// aircraft whose raw report has expired and dropped out of states is
+// naturally pruned rather than tracked forever.
+func persistAndPublishAll(ctx context.Context, logger *slog.Logger, redisClient *redisutil.Client, publisher *natsutil.FlightStatePublisher, states []flightmodel.FlightState, ttl time.Duration, lastPublished map[string]time.Time) map[string]time.Time {
+	next := make(map[string]time.Time, len(states))
+	var mu sync.Mutex
 	sem := make(chan struct{}, mergeConcurrency)
 	var wg sync.WaitGroup
 	for _, state := range states {
+		shouldPublish := !lastPublished[state.ICAO24].Equal(state.LastSeenUTC)
+
 		wg.Add(1)
 		sem <- struct{}{}
-		go func(state flightmodel.FlightState) {
+		go func(state flightmodel.FlightState, shouldPublish bool) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			persistAndPublish(ctx, logger, redisClient, publisher, state, ttl)
-		}(state)
+			if persistAndPublish(ctx, logger, redisClient, publisher, state, ttl, shouldPublish) {
+				mu.Lock()
+				next[state.ICAO24] = state.LastSeenUTC
+				mu.Unlock()
+			}
+		}(state, shouldPublish)
 	}
 	wg.Wait()
+	return next
 }
 
 // persistAndPublish writes state to Redis hot state and, only if that
-// write succeeds, publishes it to flights.updates. Publishing after a
-// failed write would let downstream consumers see an update that the
-// /readyz-backing hot state never actually held.
-func persistAndPublish(ctx context.Context, logger *slog.Logger, redisClient *redisutil.Client, publisher *natsutil.FlightStatePublisher, state flightmodel.FlightState, ttl time.Duration) {
+// write succeeds and shouldPublish is true, publishes it to flights.updates.
+// Publishing after a failed write would let downstream consumers see an
+// update that the /readyz-backing hot state never actually held. It
+// reports whether state.LastSeenUTC is now safely reflected as published
+// (write succeeded, and publish succeeded if it was attempted) so callers
+// only advance their dedup tracking on confirmed success rather than on
+// every attempt.
+func persistAndPublish(ctx context.Context, logger *slog.Logger, redisClient *redisutil.Client, publisher *natsutil.FlightStatePublisher, state flightmodel.FlightState, ttl time.Duration, shouldPublish bool) bool {
 	if err := redisClient.WriteFlightState(ctx, state, ttl); err != nil {
 		logger.Error("write flight state failed", "icao24", state.ICAO24, "err", err)
-		return
+		return false
+	}
+	if !shouldPublish {
+		return true
 	}
 	freshness.Record(ctx, time.Since(state.LastSeenUTC).Seconds())
 	if err := publisher.PublishFlightState(ctx, state); err != nil {
 		logger.Error("publish flight state failed", "icao24", state.ICAO24, "err", err)
+		return false
 	}
+	return true
 }
 
 func envString(key, fallback string) string {

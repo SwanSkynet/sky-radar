@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -89,6 +91,84 @@ func TestWriteRawStateRejectsMissingProviderOrICAO24(t *testing.T) {
 		if err := c.WriteRawState(ctx, state, time.Minute); err == nil {
 			t.Errorf("WriteRawState(%+v) returned nil error, want validation error", state)
 		}
+	}
+}
+
+func TestWriteRawStatesConcurrentlyWritesEveryState(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	const n = 200
+	states := make([]sourceadapter.RawState, n)
+	for i := range states {
+		states[i] = sourceadapter.RawState{
+			Provider: "airplanes.live",
+			ICAO24:   fmt.Sprintf("a%05x", i),
+			Payload:  json.RawMessage(`{"v":1}`),
+		}
+	}
+
+	var mu sync.Mutex
+	var errs []error
+	c.WriteRawStatesConcurrently(ctx, states, time.Minute, 16, func(_ sourceadapter.RawState, err error) {
+		mu.Lock()
+		errs = append(errs, err)
+		mu.Unlock()
+	})
+	if len(errs) != 0 {
+		t.Fatalf("onError called %d times, want 0: %v", len(errs), errs)
+	}
+
+	for _, s := range states {
+		if _, err := c.ReadRawState(ctx, s.Provider, s.ICAO24); err != nil {
+			t.Errorf("ReadRawState(%s): %v", s.ICAO24, err)
+		}
+	}
+}
+
+func TestWriteRawStatesConcurrentlyReportsValidationErrors(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	states := []sourceadapter.RawState{
+		{Provider: "airplanes.live", ICAO24: "a1b2c3"},
+		{Provider: "", ICAO24: "bad"},
+	}
+
+	var mu sync.Mutex
+	var failed []string
+	c.WriteRawStatesConcurrently(ctx, states, time.Minute, 4, func(s sourceadapter.RawState, _ error) {
+		mu.Lock()
+		failed = append(failed, s.ICAO24)
+		mu.Unlock()
+	})
+
+	if len(failed) != 1 || failed[0] != "bad" {
+		t.Errorf("failed = %v, want exactly [bad]", failed)
+	}
+}
+
+func TestWriteRawStatesConcurrentlyClampsNonPositiveConcurrency(t *testing.T) {
+	for _, concurrency := range []int{0, -1} {
+		t.Run(fmt.Sprintf("concurrency=%d", concurrency), func(t *testing.T) {
+			c := newTestClient(t)
+			ctx := context.Background()
+
+			states := []sourceadapter.RawState{
+				{Provider: "airplanes.live", ICAO24: fmt.Sprintf("a1b2c%d0", concurrency), Payload: json.RawMessage(`{"v":1}`)},
+				{Provider: "airplanes.live", ICAO24: fmt.Sprintf("a1b2c%d1", concurrency), Payload: json.RawMessage(`{"v":1}`)},
+			}
+
+			c.WriteRawStatesConcurrently(ctx, states, time.Minute, concurrency, func(s sourceadapter.RawState, err error) {
+				t.Errorf("onError(%s, %v) called, want no errors with concurrency=%d", s.ICAO24, err, concurrency)
+			})
+
+			for _, s := range states {
+				if _, err := c.ReadRawState(ctx, s.Provider, s.ICAO24); err != nil {
+					t.Errorf("ReadRawState(%s): %v", s.ICAO24, err)
+				}
+			}
+		})
 	}
 }
 
