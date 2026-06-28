@@ -54,6 +54,9 @@ func (c *Client) WriteRawState(ctx context.Context, state sourceadapter.RawState
 // solved on the normalizer's publish side. onError, if non-nil, is called
 // for each write that fails; it must be safe to call concurrently.
 func (c *Client) WriteRawStatesConcurrently(ctx context.Context, states []sourceadapter.RawState, ttl time.Duration, concurrency int, onError func(sourceadapter.RawState, error)) {
+	if concurrency < 1 {
+		concurrency = 1
+	}
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 	for _, state := range states {

@@ -226,18 +226,22 @@ func runMergeLoop(ctx context.Context, logger *slog.Logger, redisClient *redisut
 // naturally pruned rather than tracked forever.
 func persistAndPublishAll(ctx context.Context, logger *slog.Logger, redisClient *redisutil.Client, publisher *natsutil.FlightStatePublisher, states []flightmodel.FlightState, ttl time.Duration, lastPublished map[string]time.Time) map[string]time.Time {
 	next := make(map[string]time.Time, len(states))
+	var mu sync.Mutex
 	sem := make(chan struct{}, mergeConcurrency)
 	var wg sync.WaitGroup
 	for _, state := range states {
 		shouldPublish := !lastPublished[state.ICAO24].Equal(state.LastSeenUTC)
-		next[state.ICAO24] = state.LastSeenUTC
 
 		wg.Add(1)
 		sem <- struct{}{}
 		go func(state flightmodel.FlightState, shouldPublish bool) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			persistAndPublish(ctx, logger, redisClient, publisher, state, ttl, shouldPublish)
+			if persistAndPublish(ctx, logger, redisClient, publisher, state, ttl, shouldPublish) {
+				mu.Lock()
+				next[state.ICAO24] = state.LastSeenUTC
+				mu.Unlock()
+			}
 		}(state, shouldPublish)
 	}
 	wg.Wait()
@@ -247,19 +251,25 @@ func persistAndPublishAll(ctx context.Context, logger *slog.Logger, redisClient 
 // persistAndPublish writes state to Redis hot state and, only if that
 // write succeeds and shouldPublish is true, publishes it to flights.updates.
 // Publishing after a failed write would let downstream consumers see an
-// update that the /readyz-backing hot state never actually held.
-func persistAndPublish(ctx context.Context, logger *slog.Logger, redisClient *redisutil.Client, publisher *natsutil.FlightStatePublisher, state flightmodel.FlightState, ttl time.Duration, shouldPublish bool) {
+// update that the /readyz-backing hot state never actually held. It
+// reports whether state.LastSeenUTC is now safely reflected as published
+// (write succeeded, and publish succeeded if it was attempted) so callers
+// only advance their dedup tracking on confirmed success rather than on
+// every attempt.
+func persistAndPublish(ctx context.Context, logger *slog.Logger, redisClient *redisutil.Client, publisher *natsutil.FlightStatePublisher, state flightmodel.FlightState, ttl time.Duration, shouldPublish bool) bool {
 	if err := redisClient.WriteFlightState(ctx, state, ttl); err != nil {
 		logger.Error("write flight state failed", "icao24", state.ICAO24, "err", err)
-		return
+		return false
 	}
 	if !shouldPublish {
-		return
+		return true
 	}
 	freshness.Record(ctx, time.Since(state.LastSeenUTC).Seconds())
 	if err := publisher.PublishFlightState(ctx, state); err != nil {
 		logger.Error("publish flight state failed", "icao24", state.ICAO24, "err", err)
+		return false
 	}
+	return true
 }
 
 func envString(key, fallback string) string {

@@ -207,14 +207,15 @@ func runInjectionLoop(ctx context.Context, logger *slog.Logger, redisClient *red
 	total := 0
 	for {
 		now := time.Now()
-		var batch []sourceadapter.RawState
+		batch := make([]sourceadapter.RawState, 0, len(fleet)*2)
 		for _, a := range fleet {
 			if ctx.Err() != nil {
-				// duration elapsed mid-tick: stop writing rather than
-				// burning through the rest of the fleet logging a
-				// "context deadline exceeded" warning per write — the
-				// outer select below handles the actual exit.
-				break
+				// duration elapsed mid-tick: stop here rather than writing
+				// a partial batch with an already-canceled context, which
+				// would just produce a "context deadline exceeded" warning
+				// per write — the outer select below handles the actual
+				// exit.
+				return total
 			}
 			a.step(interval)
 			batch = append(batch, a.rawStates(now)...)

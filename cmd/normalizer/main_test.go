@@ -57,6 +57,12 @@ func testRedisClient(t *testing.T) *redisutil.Client {
 	return redisutil.New(&redis.Options{Addr: mr.Addr()})
 }
 
+func testRedisClientWithMiniredis(t *testing.T) (*redisutil.Client, *miniredis.Miniredis) {
+	t.Helper()
+	mr := miniredis.RunT(t)
+	return redisutil.New(&redis.Options{Addr: mr.Addr()}), mr
+}
+
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
@@ -287,9 +293,10 @@ func icao24ForIndex(i int) string {
 // cycle both wastes NATS throughput and corrupts the freshness SLO
 // measurement.
 func TestPersistAndPublishAllSkipsUnchangedState(t *testing.T) {
-	redisClient := testRedisClient(t)
+	redisClient, mr := testRedisClientWithMiniredis(t)
 	publisher, sub := testPublisher(t)
 	ctx := context.Background()
+	const ttl = 200 * time.Millisecond
 
 	state := flightmodel.FlightState{ICAO24: "a1b2c3", Lat: 1.0, Lon: 2.0, LastSeenUTC: time.Now().UTC()}
 
@@ -302,7 +309,7 @@ func TestPersistAndPublishAllSkipsUnchangedState(t *testing.T) {
 		})
 	}()
 
-	next := persistAndPublishAll(ctx, testLogger(), redisClient, publisher, []flightmodel.FlightState{state}, time.Minute, map[string]time.Time{})
+	next := persistAndPublishAll(ctx, testLogger(), redisClient, publisher, []flightmodel.FlightState{state}, ttl, map[string]time.Time{})
 
 	select {
 	case <-received:
@@ -310,9 +317,12 @@ func TestPersistAndPublishAllSkipsUnchangedState(t *testing.T) {
 		t.Fatal("timed out waiting for first publish")
 	}
 
-	// Second cycle: same icao24, same LastSeenUTC (no fresh raw report
-	// arrived) — must not produce a second flights.updates message.
-	persistAndPublishAll(ctx, testLogger(), redisClient, publisher, []flightmodel.FlightState{state}, time.Minute, next)
+	// Advance past half the TTL, then run a second cycle with the same
+	// icao24 and same LastSeenUTC (no fresh raw report arrived) — must not
+	// produce a second flights.updates message, but must still refresh the
+	// Redis TTL since the hot state's underlying raw report is still live.
+	mr.FastForward(ttl / 2)
+	persistAndPublishAll(ctx, testLogger(), redisClient, publisher, []flightmodel.FlightState{state}, ttl, next)
 
 	select {
 	case s := <-received:
@@ -320,8 +330,14 @@ func TestPersistAndPublishAllSkipsUnchangedState(t *testing.T) {
 	case <-time.After(300 * time.Millisecond):
 	}
 
+	// Advance past the remainder of the original TTL window. If the
+	// skipped cycle above had not refreshed the TTL, the key would have
+	// expired by now (it's already past the original ttl from the first
+	// write); it only survives because the second cycle's write reset the
+	// clock.
+	mr.FastForward(ttl/2 + 50*time.Millisecond)
 	if _, err := redisClient.ReadFlightState(context.Background(), state.ICAO24); err != nil {
-		t.Errorf("ReadFlightState: %v, want hot state still refreshed on the skipped cycle", err)
+		t.Errorf("ReadFlightState: %v, want hot state TTL refreshed on the skipped-publish cycle", err)
 	}
 }
 
