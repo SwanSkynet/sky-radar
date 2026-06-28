@@ -140,3 +140,65 @@ scope: this is the harness, not a capacity report. Running it once and
 recording the numbers does not satisfy P3-FR3 — that requires deliberately
 pushing `-aircraft`/`-clients` up until something breaks, which is the
 next milestone's job.
+
+## Bottleneck findings (phase-3 milestone 02, ingestvolume)
+
+Running `ingestvolume` against a local `docker compose` stack surfaced two
+ingest-path bottlenecks, both fixed in this milestone. All runs below used
+the same stack (Redis/NATS on one machine, real adapters also live and
+polling production sources concurrently — `ingestvolume`'s synthetic
+`fff*` ICAO24 block is isolated from that real traffic by design, see
+above).
+
+**1. Sequential per-aircraft Redis writes.** Every adapter (and
+`ingestvolume` itself) wrote its poll batch with a plain `for` loop calling
+`WriteRawState` once per aircraft, so wall-clock cost grew linearly with
+batch size. Fixed by `redisutil.WriteRawStatesConcurrently`, a
+semaphore-bounded (concurrency 64) fan-out, reused by all three adapters,
+`ingestvolume`, and (as `mergeConcurrency`, already present) the
+normalizer's publish side.
+
+**2. Redundant republish of unchanged state.** `runMergeLoop` re-merged
+and re-published every `raw:*` entry on every 15s tick regardless of
+whether its underlying raw report had actually changed. Since a raw
+entry's TTL (60s) outlives several merge intervals, any aircraft not
+re-polled on a given cycle still got rebroadcast on `flights.updates` with
+its old, increasingly stale `LastSeenUTC` — wasting NATS throughput and
+corrupting freshness measurement (P95 was tracking the republish gap, not
+ingest latency). Fixed by tracking the last-published `LastSeenUTC` per
+ICAO24 in `persistAndPublishAll` and skipping the publish (but still
+renewing the Redis hot-state TTL) when it hasn't changed.
+
+### Before / after (same stack, same scenario, fix toggled via the working
+tree's diff)
+
+| Scenario | Metric | Before | After |
+|---|---|---|---|
+| 200 aircraft, 45s update interval, 90s duration (isolates the republish bug: merge interval 15s « update interval) | `flights.updates` messages | 1400 (7×/aircraft for 2 real updates) | 400 (exactly 2×/aircraft) |
+| same | freshness P95 | 50.79s — WARN | 5.66s — PASS |
+| 8,000 aircraft, default 15s interval (isolates the write-loop bottleneck at scale) | `flights.updates` messages | 48,000 (1.15×/aircraft excess) | 32,000 (exact) |
+| same | freshness P95 | 37.14s — WARN | 8.34s — PASS |
+
+### Capacity check against the master PRD's 50,000-entity headroom target
+
+With both fixes applied, `ingestvolume` was pushed toward the documented
+ceiling:
+
+| Fleet size | Coverage | Freshness P95 | Verdict |
+|---|---|---|---|
+| 8,000 | 100% | 8.34s | PASS |
+| 20,000 | 100% | 7.54s | PASS |
+| 50,000 | 100% | 17.90s | WARN (within the 60s degraded threshold; above the 15s SLO) |
+
+At the documented 50,000-entity ceiling, coverage holds at 100% (no data
+loss) but P95 freshness slips just past the 15s SLO into WARN territory on
+this single-machine local stack. `runMergeLoop`'s own cycle-duration logs
+show merge cycles completing without backlog at every fleet size tested
+(no cycle exceeded the 15s ticker interval), so this isn't the same class
+of bug as the two above — it reads as the system genuinely nearing its
+per-cycle processing ceiling at the edge of the stated headroom target,
+not a discrete, fixable defect. Recorded here rather than chased further,
+per the master PRD's "truth, not a clean scoreboard" framing — it's a
+candidate for a follow-up milestone (e.g. parallelizing the JSON decode in
+`ScanRawStates`, or profiling Redis/NATS round-trip cost directly) rather
+than a fix this milestone's scope covers.

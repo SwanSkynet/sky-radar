@@ -26,15 +26,24 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/SwanSkynet/sky-radar/internal/natsutil"
 	"github.com/SwanSkynet/sky-radar/internal/redisutil"
+	"github.com/SwanSkynet/sky-radar/internal/sourceadapter"
 	"github.com/SwanSkynet/sky-radar/loadtest/internal/report"
 	"github.com/SwanSkynet/sky-radar/loadtest/internal/stats"
 	"github.com/redis/go-redis/v9"
 )
+
+// writeConcurrency bounds how many WriteRawState calls run at once per
+// injection tick (see redisutil.WriteRawStatesConcurrently's doc comment):
+// at fleet sizes approaching the master PRD's 50,000-aircraft headroom
+// target, a plain sequential write loop's wall-clock cost ate meaningfully
+// into the per-aircraft freshness budget, per docs/runbooks/load-test.md.
+const writeConcurrency = 64
 
 func main() {
 	var (
@@ -198,6 +207,7 @@ func runInjectionLoop(ctx context.Context, logger *slog.Logger, redisClient *red
 	total := 0
 	for {
 		now := time.Now()
+		var batch []sourceadapter.RawState
 		for _, a := range fleet {
 			if ctx.Err() != nil {
 				// duration elapsed mid-tick: stop writing rather than
@@ -207,14 +217,15 @@ func runInjectionLoop(ctx context.Context, logger *slog.Logger, redisClient *red
 				break
 			}
 			a.step(interval)
-			for _, raw := range a.rawStates(now) {
-				if err := redisClient.WriteRawState(ctx, raw, ttl); err != nil {
-					logger.Warn("write raw state failed", "icao24", raw.ICAO24, "provider", raw.Provider, "err", err)
-					continue
-				}
-				total++
-			}
+			batch = append(batch, a.rawStates(now)...)
 		}
+
+		var failed int64
+		redisClient.WriteRawStatesConcurrently(ctx, batch, ttl, writeConcurrency, func(raw sourceadapter.RawState, err error) {
+			atomic.AddInt64(&failed, 1)
+			logger.Warn("write raw state failed", "icao24", raw.ICAO24, "provider", raw.Provider, "err", err)
+		})
+		total += len(batch) - int(failed)
 		logger.Info("injection tick complete", "total_written", total)
 
 		select {

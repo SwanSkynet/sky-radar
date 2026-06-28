@@ -32,6 +32,10 @@ const (
 	defaultPollInterval = 15 * time.Second
 	defaultRawStateTTL  = 60 * time.Second
 	defaultRedisAddr    = "localhost:6379"
+
+	// writeConcurrency bounds how many WriteRawState calls run at once per
+	// poll batch (see redisutil.WriteRawStatesConcurrently's doc comment).
+	writeConcurrency = 64
 )
 
 // otelMeter and the instruments below are created against otel's global,
@@ -150,11 +154,9 @@ func runPollLoop(ctx context.Context, logger *slog.Logger, adapter sourceadapter
 			logger.Error("poll failed", "err", err)
 		} else {
 			markSourceFresh()
-			for _, state := range states {
-				if err := redisClient.WriteRawState(ctx, state, ttl); err != nil {
-					logger.Error("redis write failed", "icao24", state.ICAO24, "err", err)
-				}
-			}
+			redisClient.WriteRawStatesConcurrently(ctx, states, ttl, writeConcurrency, func(state sourceadapter.RawState, err error) {
+				logger.Error("redis write failed", "icao24", state.ICAO24, "err", err)
+			})
 			logger.Info("poll complete", "count", len(states))
 		}
 

@@ -200,7 +200,7 @@ func TestPersistAndPublishSkipsPublishWhenWriteFails(t *testing.T) {
 	}
 
 	state := flightmodel.FlightState{ICAO24: "a1b2c3", LastSeenUTC: time.Now().UTC()}
-	persistAndPublish(ctx, testLogger(), redisClient, publisher, state, time.Minute)
+	persistAndPublish(ctx, testLogger(), redisClient, publisher, state, time.Minute, true)
 
 	runCtx, runCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer runCancel()
@@ -260,7 +260,7 @@ func TestPersistAndPublishAllWritesAndPublishesEveryState(t *testing.T) {
 		})
 	}()
 
-	persistAndPublishAll(ctx, testLogger(), redisClient, publisher, states, time.Minute)
+	persistAndPublishAll(ctx, testLogger(), redisClient, publisher, states, time.Minute, map[string]time.Time{})
 
 	select {
 	case <-done:
@@ -279,6 +279,52 @@ func icao24ForIndex(i int) string {
 	return fmt.Sprintf("a%05x", i)
 }
 
+// TestPersistAndPublishAllSkipsUnchangedState exercises the dedup fix from
+// docs/runbooks/load-test.md's bottleneck findings: a state whose
+// LastSeenUTC matches what was already published for that icao24 must be
+// written to Redis (to keep its hot-state TTL alive) but not re-published,
+// since flights.updates carrying the same stale LastSeenUTC on every merge
+// cycle both wastes NATS throughput and corrupts the freshness SLO
+// measurement.
+func TestPersistAndPublishAllSkipsUnchangedState(t *testing.T) {
+	redisClient := testRedisClient(t)
+	publisher, sub := testPublisher(t)
+	ctx := context.Background()
+
+	state := flightmodel.FlightState{ICAO24: "a1b2c3", Lat: 1.0, Lon: 2.0, LastSeenUTC: time.Now().UTC()}
+
+	received := make(chan flightmodel.FlightState, 4)
+	runCtx, runCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer runCancel()
+	go func() {
+		_ = sub.Run(runCtx, nil, func(s flightmodel.FlightState, _ time.Time) {
+			received <- s
+		})
+	}()
+
+	next := persistAndPublishAll(ctx, testLogger(), redisClient, publisher, []flightmodel.FlightState{state}, time.Minute, map[string]time.Time{})
+
+	select {
+	case <-received:
+	case <-time.After(1 * time.Second):
+		t.Fatal("timed out waiting for first publish")
+	}
+
+	// Second cycle: same icao24, same LastSeenUTC (no fresh raw report
+	// arrived) — must not produce a second flights.updates message.
+	persistAndPublishAll(ctx, testLogger(), redisClient, publisher, []flightmodel.FlightState{state}, time.Minute, next)
+
+	select {
+	case s := <-received:
+		t.Fatalf("unexpected republish of unchanged state: %+v", s)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	if _, err := redisClient.ReadFlightState(context.Background(), state.ICAO24); err != nil {
+		t.Errorf("ReadFlightState: %v, want hot state still refreshed on the skipped cycle", err)
+	}
+}
+
 func TestRunMergeLoopWritesNothingWhenNoRawState(t *testing.T) {
 	redisClient := testRedisClient(t)
 	publisher, _ := testPublisher(t)
@@ -290,6 +336,56 @@ func TestRunMergeLoopWritesNothingWhenNoRawState(t *testing.T) {
 
 	if _, err := redisClient.ReadFlightState(context.Background(), "a1b2c3"); !errors.Is(err, redis.Nil) {
 		t.Fatalf("ReadFlightState: err = %v, want redis.Nil", err)
+	}
+}
+
+func TestRunMergeLoopPublishesOnceAcrossMultipleCyclesOfUnchangedRawState(t *testing.T) {
+	redisClient := testRedisClient(t)
+	publisher, sub := testPublisher(t)
+	ctx0 := context.Background()
+
+	raw := sourceadapter.RawState{
+		Provider:  "airplanes.live",
+		ICAO24:    "a1b2c3",
+		FetchedAt: time.Now().UTC(),
+		Payload:   json.RawMessage(`{"hex":"a1b2c3","flight":"UAL123","lat":37.0,"lon":-122.0,"alt_baro":35000,"type":"adsb_icao"}`),
+	}
+	if err := redisClient.WriteRawState(ctx0, raw, time.Minute); err != nil {
+		t.Fatalf("WriteRawState: %v", err)
+	}
+
+	// A short interval over a longer-lived ctx runs several merge cycles
+	// against the same never-rewritten raw state, mirroring the
+	// raw-state-ttl-outlives-merge-interval scenario the load test
+	// (docs/runbooks/load-test.md) exercised at scale.
+	ctx, cancel := context.WithTimeout(ctx0, 120*time.Millisecond)
+	defer cancel()
+
+	received := make(chan struct{}, 8)
+	runCtx, runCancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer runCancel()
+	go func() {
+		_ = sub.Run(runCtx, nil, func(flightmodel.FlightState, time.Time) {
+			received <- struct{}{}
+		})
+	}()
+
+	runMergeLoop(ctx, testLogger(), redisClient, publisher, 20*time.Millisecond, time.Minute)
+
+	deadline := time.After(300 * time.Millisecond)
+	count := 0
+loop:
+	for {
+		select {
+		case <-received:
+			count++
+		case <-deadline:
+			break loop
+		}
+	}
+
+	if count != 1 {
+		t.Errorf("flights.updates message count = %d, want exactly 1 across multiple merge cycles of unchanged raw state", count)
 	}
 }
 
